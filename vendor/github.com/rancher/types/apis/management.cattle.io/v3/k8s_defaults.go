@@ -79,7 +79,7 @@ var (
 			Jenkins:       m("rancher/pipeline-jenkins-server:v0.1.0"),
 			JenkinsJnlp:   m("jenkins/jnlp-slave:3.10-1-alpine"),
 			AlpineGit:     m("rancher/pipeline-tools:v0.1.0"),
-			PluginsDocker: m("plugins/docker:17.12"),
+			PluginsDocker: m("fbank/plugins-docker:17.12"),
 			Minio:         m("minio/minio:RELEASE.2018-05-25T19-49-13Z"),
 			Registry:      m("registry:2"),
 			RegistryProxy: m("rancher/pipeline-tools:v0.1.0"),
