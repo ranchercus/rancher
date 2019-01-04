@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/rancher/rancher/pkg/settings"
+
 	images "github.com/rancher/rancher/pkg/image"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
@@ -91,11 +93,12 @@ func convertPublishImageconfig(execution *v3.PipelineExecution, step *v3.Step) P
 	pStep.image = images.Resolve(mv3.ToolsSystemImages.PipelineSystemImages.PluginsDocker)
 	pStep.command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker'''`
 	publishEnv := map[string]string{
-		"DOCKER_REGISTRY":   registry,
-		"PLUGIN_REPO":       pluginRepo,
-		"PLUGIN_TAG":        tag,
-		"PLUGIN_DOCKERFILE": config.DockerfilePath,
-		"PLUGIN_CONTEXT":    config.BuildContext,
+		"DOCKER_REGISTRY":            registry,
+		"PLUGIN_REPO":                pluginRepo,
+		"PLUGIN_TAG":                 tag,
+		"PLUGIN_DOCKERFILE":          config.DockerfilePath,
+		"PLUGIN_CONTEXT":             config.BuildContext,
+		"PLUGIN_BUILD_FROM_REGISTRY": settings.PipelinePluginBuildFromRegistry.Get(),
 	}
 
 	for k, v := range step.Env {

@@ -105,9 +105,9 @@ func (l *Lifecycle) deploy(obj *v3.PipelineExecution) error {
 		return err
 	}
 	//docker credential for local registry
-	if err := l.reconcileRegistryCredential(obj, token); err != nil {
-		return err
-	}
+	// if err := l.reconcileRegistryCredential(obj, token); err != nil {
+	// 	return err
+	// }
 	nginxDaemonset := getProxyDaemonset()
 	if _, err := l.daemonsets.Create(nginxDaemonset); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error create nginx proxy")

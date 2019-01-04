@@ -2,16 +2,17 @@ package pipeline
 
 import (
 	"context"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/gorilla/websocket"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/rancher/pkg/pipeline/engine"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/ticker"
 	"github.com/sirupsen/logrus"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
 )
 
 const (
@@ -79,7 +80,7 @@ func (h *ExecutionHandler) handleLog(apiContext *types.APIContext) error {
 	for range ticker.Context(cancelCtx, logSyncInterval) {
 		execution, err = h.PipelineExecutionLister.Get(ns, name)
 		if err != nil {
-			logrus.Debugf("error in execution get: %v", err)
+			logrus.Infof("error in execution get: %v", err)
 			if prevLog == "" {
 				writeData(c, []byte("Log is unavailable."))
 			}
@@ -88,7 +89,7 @@ func (h *ExecutionHandler) handleLog(apiContext *types.APIContext) error {
 		}
 		log, err := pipelineEngine.GetStepLog(execution, stage, step)
 		if err != nil {
-			logrus.Debug(err)
+			logrus.Info(err)
 			if prevLog == "" {
 				writeData(c, []byte("Log is unavailable."))
 			}
