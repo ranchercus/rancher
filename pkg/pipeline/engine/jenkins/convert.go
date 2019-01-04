@@ -84,6 +84,12 @@ func convertPublishImageconfig(execution *v3.PipelineExecution, step *v3.Step) P
 		secretUserKey = utils.PipelineSecretUserKey
 		secretPwKey = utils.PipelineSecretTokenKey
 	}
+	if registry == settings.DefaultOfficialRegistry.Get() {
+		srepo := fmt.Sprintf("%s/%s/", execution.Spec.ProjectName, execution.Namespace)
+		if !strings.HasPrefix(repo, srepo) {
+			repo = fmt.Sprintf("%s%s", srepo, repo)
+		}
+	}
 	pluginRepo := fmt.Sprintf("%s/%s", registry, repo)
 	if registry == utils.DefaultRegistry {
 		//the `plugins/docker` image fails when setting DOCKER_REGISTRY to index.docker.io
