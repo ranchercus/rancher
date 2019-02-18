@@ -199,6 +199,8 @@ func GetEnvVarMap(execution *v3.PipelineExecution) map[string]string {
 	m[EnvClusterID] = clusterID
 	m[EnvLocalRegistry] = localRegistry
 
+	m[EnvImageTag] = fmt.Sprintf("%s-%s", time.Now().Format("20060102"), m[EnvExecutionSequence])
+
 	if execution.Spec.Event == WebhookEventTag {
 		m[EnvGitTag] = strings.TrimPrefix(execution.Spec.Ref, "refs/tags/")
 	}

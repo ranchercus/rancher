@@ -61,12 +61,12 @@ func (l *Lifecycle) deploy(obj *v3.PipelineExecution) error {
 		return errors.Wrapf(err, "Error create secret")
 	}
 
-	// if err := l.reconcileRegistryCASecret(clusterID); err != nil {
-	// 	return err
-	// }
-	// if err := l.reconcileRegistryCrtSecret(clusterID, projectID); err != nil {
-	// 	return err
-	// }
+	if err := l.reconcileRegistryCASecret(clusterID); err != nil {
+		return err
+	}
+	if err := l.reconcileRegistryCrtSecret(clusterID, projectID); err != nil {
+		return err
+	}
 
 	sa := getServiceAccount(nsName)
 	if _, err := l.serviceAccounts.Create(sa); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -84,14 +84,14 @@ func (l *Lifecycle) deploy(obj *v3.PipelineExecution) error {
 	if _, err := l.deployments.Create(jenkinsDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error create jenkins deployment")
 	}
-	// registryService := getRegistryService(nsName)
-	// if _, err := l.services.Create(registryService); err != nil && !apierrors.IsAlreadyExists(err) {
-	// 	return errors.Wrapf(err, "Error create registry service")
-	// }
-	// registryDeployment := GetRegistryDeployment(nsName)
-	// if _, err := l.deployments.Create(registryDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
-	// 	return errors.Wrapf(err, "Error create registry deployment")
-	// }
+	registryService := getRegistryService(nsName)
+	if _, err := l.services.Create(registryService); err != nil && !apierrors.IsAlreadyExists(err) {
+		return errors.Wrapf(err, "Error create registry service")
+	}
+	registryDeployment := GetRegistryDeployment(nsName)
+	if _, err := l.deployments.Create(registryDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
+		return errors.Wrapf(err, "Error create registry deployment")
+	}
 	minioService := getMinioService(nsName)
 	if _, err := l.services.Create(minioService); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error create minio service")
@@ -105,9 +105,9 @@ func (l *Lifecycle) deploy(obj *v3.PipelineExecution) error {
 		return err
 	}
 	//docker credential for local registry
-	// if err := l.reconcileRegistryCredential(obj, token); err != nil {
-	// 	return err
-	// }
+	if err := l.reconcileRegistryCredential(obj, token); err != nil {
+		return err
+	}
 	nginxDaemonset := getProxyDaemonset()
 	if _, err := l.daemonsets.Create(nginxDaemonset); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error create nginx proxy")
