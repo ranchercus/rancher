@@ -169,7 +169,7 @@ func (c *Cluster) BuildKubeAPIProcess(prefixPath string) v3.Process {
 		}
 	}
 	// check api server count for k8s v1.8
-	if getTagMajorVersion(c.Version) == "v1.8" {
+	if util.GetTagMajorVersion(c.Version) == "v1.8" {
 		CommandArgs["apiserver-count"] = strconv.Itoa(len(c.ControlPlaneHosts))
 	}
 
@@ -330,7 +330,6 @@ func (c *Cluster) BuildKubeletProcess(host *hosts.Host, prefixPath string) v3.Pr
 	CommandArgs := map[string]string{
 		"v":                            "2",
 		"address":                      "0.0.0.0",
-		"cadvisor-port":                "0", //depricated in 1.12
 		"read-only-port":               "0",
 		"cluster-domain":               c.ClusterDomain,
 		"pod-infra-container-image":    c.Services.Kubelet.InfraContainerImage,
@@ -738,11 +737,11 @@ func BuildPortChecksFromPortList(host *hosts.Host, portList []string, proto stri
 }
 
 func (c *Cluster) GetKubernetesServicesOptions() v3.KubernetesServicesOptions {
-	clusterMajorVersion := getTagMajorVersion(c.Version)
+	clusterMajorVersion := util.GetTagMajorVersion(c.Version)
 	NamedkK8sImage, _ := ref.ParseNormalizedNamed(c.SystemImages.Kubernetes)
 
 	k8sImageTag := NamedkK8sImage.(ref.Tagged).Tag()
-	k8sImageMajorVersion := getTagMajorVersion(k8sImageTag)
+	k8sImageMajorVersion := util.GetTagMajorVersion(k8sImageTag)
 
 	if clusterMajorVersion != k8sImageMajorVersion && k8sImageMajorVersion != "" {
 		clusterMajorVersion = k8sImageMajorVersion
@@ -753,14 +752,6 @@ func (c *Cluster) GetKubernetesServicesOptions() v3.KubernetesServicesOptions {
 		return serviceOptions
 	}
 	return v3.KubernetesServicesOptions{}
-}
-
-func getTagMajorVersion(tag string) string {
-	splitTag := strings.Split(tag, ".")
-	if len(splitTag) < 2 {
-		return ""
-	}
-	return strings.Join(splitTag[:2], ".")
 }
 
 func getCloudConfigChecksum(config v3.CloudProvider) string {
