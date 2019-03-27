@@ -88,6 +88,7 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 	pipelineExecutionLister := pipelineExecutions.Controller().Lister()
 	pipelineSettingLister := cluster.Management.Project.PipelineSettings("").Controller().Lister()
 	sourceCodeCredentialLister := cluster.Management.Project.SourceCodeCredentials("").Controller().Lister()
+	projectLister := cluster.Management.Management.Projects("").Controller().Lister()
 
 	pipelineEngine := engine.New(cluster)
 	pipelineExecutionLifecycle := &Lifecycle{
@@ -124,6 +125,7 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 		pipelineExecutionLister: pipelineExecutionLister,
 		pipelineExecutions:      pipelineExecutions,
 		pipelineEngine:          pipelineEngine,
+		projectLister:           projectLister,
 	}
 	registryCertSyncer := &RegistryCertSyncer{
 		clusterName: clusterName,

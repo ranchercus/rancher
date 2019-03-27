@@ -2,8 +2,10 @@ package engine
 
 import (
 	"github.com/rancher/rancher/pkg/pipeline/engine/jenkins"
+	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config"
+	"k8s.io/client-go/tools/cache"
 )
 
 type PipelineEngine interface {
@@ -24,6 +26,8 @@ func New(cluster *config.UserContext) PipelineEngine {
 	sourceCodeCredentialLister := cluster.Management.Project.SourceCodeCredentials("").Controller().Lister()
 	pipelineLister := cluster.Management.Project.Pipelines("").Controller().Lister()
 	dialer := cluster.Management.Dialer
+	tokenInformer := cluster.Management.Management.Tokens("").Controller().Informer()
+	tokenInformer.AddIndexers(map[string]cache.IndexFunc{"authn.management.cattle.io/uid-key-index": uidKeyIndexer})
 
 	engine := &jenkins.Engine{
 		ServiceLister:              serviceLister,
@@ -34,8 +38,18 @@ func New(cluster *config.UserContext) PipelineEngine {
 		SourceCodeCredentialLister: sourceCodeCredentialLister,
 		PipelineLister:             pipelineLister,
 
-		Dialer:      dialer,
-		ClusterName: cluster.ClusterName,
+		Dialer:       dialer,
+		ClusterName:  cluster.ClusterName,
+		TokenIndexer: tokenInformer.GetIndexer(),
+		UserLister:   cluster.Management.Management.Users("").Controller().Lister(),
 	}
 	return engine
+}
+func uidKeyIndexer(obj interface{}) ([]string, error) {
+	token, ok := obj.(*mv3.Token)
+	if !ok {
+		return []string{}, nil
+	}
+
+	return []string{token.UserID}, nil
 }

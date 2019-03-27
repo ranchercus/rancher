@@ -1,6 +1,7 @@
 package settings
 
+//Env var "CATTLE_" + strings.ToUpper(strings.Replace(name, "-", "_", -1))
 var (
-	DefaultDockerRegistry = NewSetting("default-docker-registry", "docker.io.i.fbank.com")
-	DefaultPipelineRegistry         = NewSetting("default-pipeline-registry", "registry.docker.i.fbank.com")
+	DefaultPipelineRegistry  = NewSetting("default-pipeline-registry", "registry.docker.i.fbank.com")
+	PipelineRegistryInsecure = NewSetting("pipeline-registry-insecure", "false")
 )

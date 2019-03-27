@@ -2,6 +2,7 @@ package pipelineexecution
 
 import (
 	"github.com/rancher/rancher/pkg/pipeline/utils"
+	"github.com/rancher/rancher/pkg/settings"
 
 	"crypto/rsa"
 	"crypto/x509"
@@ -837,5 +838,44 @@ func (l *Lifecycle) reconcileRegistryCredential(obj *v3.PipelineExecution, token
 	if _, err := l.managementSecrets.Create(dockerCredential); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error create credential for local registry")
 	}
+	if settings.DefaultPipelineRegistry.Get() != "" {
+		defaultCockerCredential, err := getDefaultRegistryCredential(obj.Spec.ProjectName, token, settings.DefaultPipelineRegistry.Get())
+		if err != nil {
+			return err
+		}
+		if _, err := l.managementSecrets.Create(defaultCockerCredential); err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "Error create credential for default pipeline registry")
+		}
+	}
 	return nil
+}
+
+func getDefaultRegistryCredential(projectID string, token string, hostname string) (*corev1.Secret, error) {
+	_, ns := ref.Parse(projectID)
+	config := credentialprovider.DockerConfigJson{
+		Auths: credentialprovider.DockerConfig{
+			hostname: credentialprovider.DockerConfigEntry{
+				Username: utils.PipelineName,
+				Password: token,
+				Email:    "",
+			},
+		},
+	}
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pipeline-default-docker-registry",
+			Namespace: ns,
+			Annotations: map[string]string{
+				projectIDFieldLabel: projectID,
+			},
+		},
+		Data: map[string][]byte{
+			corev1.DockerConfigJsonKey: configJSON,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+	}, nil
 }

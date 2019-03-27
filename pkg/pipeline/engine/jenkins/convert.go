@@ -76,6 +76,9 @@ func convertPublishImageconfig(execution *v3.PipelineExecution, step *v3.Step) P
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 	processedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 	secretName := fmt.Sprintf("%s-%s", execution.Namespace, processedRegistry)
+	if registry == settings.DefaultPipelineRegistry.Get() {
+		secretName = fmt.Sprintf("%s-%s-%s", execution.Namespace, processedRegistry, execution.Spec.TriggerUserName)
+	}
 	secretUserKey := utils.PublishSecretUserKey
 	secretPwKey := utils.PublishSecretPwKey
 	if !config.PushRemote {
@@ -98,7 +101,8 @@ func convertPublishImageconfig(execution *v3.PipelineExecution, step *v3.Step) P
 		"PLUGIN_TAG":                 tag,
 		"PLUGIN_DOCKERFILE":          config.DockerfilePath,
 		"PLUGIN_CONTEXT":             config.BuildContext,
-		"PLUGIN_BUILD_FROM_REGISTRY": settings.DefaultDockerRegistry.Get(),
+		"PLUGIN_BUILD_FROM_REGISTRY": settings.DefaultPipelineRegistry.Get(),
+		"PLUGIN_INSECURE":            settings.PipelineRegistryInsecure.Get(),
 	}
 
 	for k, v := range step.Env {
