@@ -23,13 +23,10 @@ import (
 	"net"
 	"net/http"
 	goruntime "runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/emicklei/go-restful-swagger12"
-	"github.com/go-openapi/spec"
 	"github.com/golang/glog"
 	"github.com/pborman/uuid"
 
@@ -50,21 +47,15 @@ import (
 	authorizerunion "k8s.io/apiserver/pkg/authorization/union"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	genericapifilters "k8s.io/apiserver/pkg/endpoints/filters"
-	apiopenapi "k8s.io/apiserver/pkg/endpoints/openapi"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
-	"k8s.io/apiserver/pkg/features"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic"
 	genericfilters "k8s.io/apiserver/pkg/server/filters"
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/apiserver/pkg/server/routes"
 	serverstore "k8s.io/apiserver/pkg/server/storage"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/apiserver/pkg/util/logs"
 	"k8s.io/client-go/informers"
 	restclient "k8s.io/client-go/rest"
-	certutil "k8s.io/client-go/util/cert"
-	openapicommon "k8s.io/kube-openapi/pkg/common"
-
 	// install apis
 	_ "k8s.io/apiserver/pkg/apis/apiserver/install"
 )
@@ -101,7 +92,6 @@ type Config struct {
 	AdmissionControl      admission.Interface
 	CorsAllowedOriginList []string
 
-	EnableSwaggerUI bool
 	EnableIndex     bool
 	EnableProfiling bool
 	EnableDiscovery bool
@@ -143,10 +133,6 @@ type Config struct {
 	// Serializer is required and provides the interface for serializing and converting objects to and from the wire
 	// The default (api.Codecs) usually works fine.
 	Serializer runtime.NegotiatedSerializer
-	// OpenAPIConfig will be used in generating OpenAPI spec. This is nil by default. Use DefaultOpenAPIConfig for "working" defaults.
-	OpenAPIConfig *openapicommon.Config
-	// SwaggerConfig will be used in generating Swagger spec. This is nil by default. Use DefaultSwaggerConfig for "working" defaults.
-	SwaggerConfig *swagger.Config
 
 	// RESTOptionsGetter is used to construct RESTStorage types via the generic registry.
 	RESTOptionsGetter genericregistry.RESTOptionsGetter
@@ -165,10 +151,6 @@ type Config struct {
 	MaxMutatingRequestsInFlight int
 	// Predicate which is true for paths of long-running http requests
 	LongRunningFunc apirequest.LongRunningRequestCheck
-
-	// EnableAPIResponseCompression indicates whether API Responses should support compression
-	// if the client requests it via Accept-Encoding
-	EnableAPIResponseCompression bool
 
 	// MergedResourceConfig indicates which groupVersion enabled and its resources enabled/disabled.
 	// This is composed of genericapiserver defaultAPIResourceConfig and those parsed from flags.
@@ -224,6 +206,8 @@ type SecureServingInfo struct {
 	// HTTP2MaxStreamsPerConnection is the limit that the api server imposes on each client.
 	// A value of zero means to use the default provided by golang's HTTP/2 support.
 	HTTP2MaxStreamsPerConnection int
+
+	AdvertisePort int
 }
 
 type AuthenticationInfo struct {
@@ -258,7 +242,6 @@ func NewConfig(codecs serializer.CodecFactory) *Config {
 		MaxMutatingRequestsInFlight:  200,
 		RequestTimeout:               time.Duration(60) * time.Second,
 		MinRequestTimeout:            1800,
-		EnableAPIResponseCompression: utilfeature.DefaultFeatureGate.Enabled(features.APIResponseCompression),
 
 		// Default to treating watch as a long-running operation
 		// Generic API servers have no inherent long-running subresources
@@ -271,62 +254,6 @@ func NewRecommendedConfig(codecs serializer.CodecFactory) *RecommendedConfig {
 	return &RecommendedConfig{
 		Config: *NewConfig(codecs),
 	}
-}
-
-func DefaultOpenAPIConfig(getDefinitions openapicommon.GetOpenAPIDefinitions, defNamer *apiopenapi.DefinitionNamer) *openapicommon.Config {
-	return &openapicommon.Config{
-		ProtocolList:   []string{"https"},
-		IgnorePrefixes: []string{"/swaggerapi"},
-		Info: &spec.Info{
-			InfoProps: spec.InfoProps{
-				Title: "Generic API Server",
-			},
-		},
-		DefaultResponse: &spec.Response{
-			ResponseProps: spec.ResponseProps{
-				Description: "Default Response.",
-			},
-		},
-		GetOperationIDAndTags: apiopenapi.GetOperationIDAndTags,
-		GetDefinitionName:     defNamer.GetDefinitionName,
-		GetDefinitions:        getDefinitions,
-	}
-}
-
-// DefaultSwaggerConfig returns a default configuration without WebServiceURL and
-// WebServices set.
-func DefaultSwaggerConfig() *swagger.Config {
-	return &swagger.Config{
-		ApiPath:         "/swaggerapi",
-		SwaggerPath:     "/swaggerui/",
-		SwaggerFilePath: "/swagger-ui/",
-		SchemaFormatHandler: func(typeName string) string {
-			switch typeName {
-			case "metav1.Time", "*metav1.Time":
-				return "date-time"
-			}
-			return ""
-		},
-	}
-}
-
-func (c *AuthenticationInfo) ApplyClientCert(clientCAFile string, servingInfo *SecureServingInfo) error {
-	if servingInfo != nil {
-		if len(clientCAFile) > 0 {
-			clientCAs, err := certutil.CertsFromFile(clientCAFile)
-			if err != nil {
-				return fmt.Errorf("unable to load client CA file: %v", err)
-			}
-			if servingInfo.ClientCA == nil {
-				servingInfo.ClientCA = x509.NewCertPool()
-			}
-			for _, cert := range clientCAs {
-				servingInfo.ClientCA.AddCert(cert)
-			}
-		}
-	}
-
-	return nil
 }
 
 type completedConfig struct {
@@ -364,49 +291,6 @@ func (c *Config) Complete(informers informers.SharedInformerFactory) CompletedCo
 		c.ExternalAddress = net.JoinHostPort(c.ExternalAddress, strconv.Itoa(port))
 	}
 
-	if c.OpenAPIConfig != nil {
-		if c.OpenAPIConfig.SecurityDefinitions != nil {
-			// Setup OpenAPI security: all APIs will have the same authentication for now.
-			c.OpenAPIConfig.DefaultSecurity = []map[string][]string{}
-			keys := []string{}
-			for k := range *c.OpenAPIConfig.SecurityDefinitions {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				c.OpenAPIConfig.DefaultSecurity = append(c.OpenAPIConfig.DefaultSecurity, map[string][]string{k: {}})
-			}
-			if c.OpenAPIConfig.CommonResponses == nil {
-				c.OpenAPIConfig.CommonResponses = map[int]spec.Response{}
-			}
-			if _, exists := c.OpenAPIConfig.CommonResponses[http.StatusUnauthorized]; !exists {
-				c.OpenAPIConfig.CommonResponses[http.StatusUnauthorized] = spec.Response{
-					ResponseProps: spec.ResponseProps{
-						Description: "Unauthorized",
-					},
-				}
-			}
-		}
-
-		// make sure we populate info, and info.version, if not manually set
-		if c.OpenAPIConfig.Info == nil {
-			c.OpenAPIConfig.Info = &spec.Info{}
-		}
-		if c.OpenAPIConfig.Info.Version == "" {
-			if c.Version != nil {
-				c.OpenAPIConfig.Info.Version = strings.Split(c.Version.String(), "-")[0]
-			} else {
-				c.OpenAPIConfig.Info.Version = "unversioned"
-			}
-		}
-	}
-	if c.SwaggerConfig != nil && len(c.SwaggerConfig.WebServicesUrl) == 0 {
-		if c.SecureServing != nil {
-			c.SwaggerConfig.WebServicesUrl = "https://" + c.ExternalAddress
-		} else {
-			c.SwaggerConfig.WebServicesUrl = "http://" + c.ExternalAddress
-		}
-	}
 	if c.DiscoveryAddresses == nil {
 		c.DiscoveryAddresses = discovery.DefaultAddresses{DefaultAddress: c.ExternalAddress}
 	}
@@ -463,9 +347,6 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 
 		listedPathProvider: apiServerHandler,
 
-		swaggerConfig: c.SwaggerConfig,
-		openAPIConfig: c.OpenAPIConfig,
-
 		postStartHooks:         map[string]postStartHookEntry{},
 		preShutdownHooks:       map[string]preShutdownHookEntry{},
 		disabledPostStartHooks: c.DisabledPostStartHooks,
@@ -473,8 +354,6 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 		healthzChecks: c.HealthzChecks,
 
 		DiscoveryGroupManager: discovery.NewRootAPIsHandler(c.DiscoveryAddresses, c.Serializer),
-
-		enableAPIResponseCompression: c.EnableAPIResponseCompression,
 	}
 
 	for k, v := range delegationTarget.PostStartHooks() {
@@ -511,7 +390,7 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 		s.healthzChecks = append(s.healthzChecks, delegateCheck)
 	}
 
-	s.listedPathProvider = routes.ListedPathProviders{s.listedPathProvider, delegationTarget}
+	s.listedPathProvider = routes.ListedPathProviders{s.listedPathProvider, delegationTarget, s.DiscoveryGroupManager}
 
 	installAPI(s, c.Config)
 
@@ -546,9 +425,6 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 func installAPI(s *GenericAPIServer, c *Config) {
 	if c.EnableIndex {
 		routes.Index{}.Install(s.listedPathProvider, s.Handler.NonGoRestfulMux)
-	}
-	if c.SwaggerConfig != nil && c.EnableSwaggerUI {
-		routes.SwaggerUI{}.Install(s.Handler.NonGoRestfulMux)
 	}
 	if c.EnableProfiling {
 		routes.Profiling{}.Install(s.Handler.NonGoRestfulMux)
@@ -599,6 +475,9 @@ func (s *SecureServingInfo) HostPort() (string, int, error) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return "", 0, fmt.Errorf("invalid non-numeric port %q", portStr)
+	}
+	if s.AdvertisePort != 0 {
+		port = s.AdvertisePort
 	}
 	return host, port, nil
 }

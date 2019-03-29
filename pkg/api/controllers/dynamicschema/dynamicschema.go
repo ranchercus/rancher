@@ -1,6 +1,7 @@
 package dynamicschema
 
 import (
+	"context"
 	"sync"
 
 	"github.com/rancher/norman/types"
@@ -8,6 +9,7 @@ import (
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	managementSchema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
 	"github.com/rancher/types/config"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 type Controller struct {
@@ -17,22 +19,22 @@ type Controller struct {
 	known   map[string]bool
 }
 
-func Register(management *config.ScaledContext, schemas *types.Schemas) {
+func Register(ctx context.Context, management *config.ScaledContext, schemas *types.Schemas) {
 	c := &Controller{
 		Schemas: schemas,
 	}
-	management.Management.DynamicSchemas("").AddHandler("dynamic-schema", c.Sync)
+	management.Management.DynamicSchemas("").AddHandler(ctx, "dynamic-schema", c.Sync)
 }
 
-func (c *Controller) Sync(key string, dynamicSchema *v3.DynamicSchema) error {
+func (c *Controller) Sync(key string, dynamicSchema *v3.DynamicSchema) (runtime.Object, error) {
 	c.Lock()
 	defer c.Unlock()
 
 	if dynamicSchema == nil {
-		return c.remove(key)
+		return nil, c.remove(key)
 	}
 
-	return c.add(dynamicSchema)
+	return nil, c.add(dynamicSchema)
 }
 
 func (c *Controller) remove(id string) error {
@@ -69,12 +71,26 @@ func (c *Controller) add(dynamicSchema *v3.DynamicSchema) error {
 			field.Default = defMap["stringSliceValue"]
 		}
 
+		field.DynamicField = true
+
 		schema.ResourceFields[name] = field
 	}
 
-	schema.ID = dynamicSchema.Name
+	// we need to maintain backwards compatibility with older dynamic schemas that were created before we had the
+	// schema name field
+	if dynamicSchema.Spec.SchemaName != "" {
+		schema.ID = dynamicSchema.Spec.SchemaName
+	} else {
+		schema.ID = dynamicSchema.Name
+	}
 	schema.Version = managementSchema.Version
-	c.Schemas.AddSchema(schema)
+	schema.DynamicSchemaVersion = dynamicSchema.ResourceVersion
+
+	if schema.Embed {
+		c.Schemas.AddSchema(schema)
+	} else {
+		c.Schemas.ForceAddSchema(schema)
+	}
 
 	return nil
 }

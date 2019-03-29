@@ -25,24 +25,18 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 		NsIndexer:           nsInformer.GetIndexer(),
 		ResourceQuotas:      cluster.Core.ResourceQuotas(""),
 		ResourceQuotaLister: cluster.Core.ResourceQuotas("").Controller().Lister(),
+		LimitRange:          cluster.Core.LimitRanges(""),
+		LimitRangeLister:    cluster.Core.LimitRanges("").Controller().Lister(),
 		ProjectLister:       cluster.Management.Management.Projects(cluster.ClusterName).Controller().Lister(),
 	}
-	cluster.Core.Namespaces("").AddHandler("resourceQuotaSyncController", sync.syncResourceQuota)
+	cluster.Core.Namespaces("").AddHandler(ctx, "resourceQuotaSyncController", sync.syncResourceQuota)
 
 	reconcile := &reconcileController{
 		namespaces: cluster.Core.Namespaces(""),
 		nsIndexer:  nsInformer.GetIndexer(),
 	}
 
-	cluster.Management.Management.Projects(cluster.ClusterName).AddHandler("resourceQuotaNamespacesReconcileController", reconcile.reconcileNamespaces)
-
-	cleanup := &cleanupController{
-		projectLister:       cluster.Management.Management.Projects(cluster.ClusterName).Controller().Lister(),
-		namespaceLister:     cluster.Core.Namespaces("").Controller().Lister(),
-		resourceQuotas:      cluster.Core.ResourceQuotas(""),
-		resourceQuotaLister: cluster.Core.ResourceQuotas("").Controller().Lister(),
-	}
-	cluster.Core.ResourceQuotas("").AddHandler("resourceQuotaCleanupController", cleanup.cleanup)
+	cluster.Management.Management.Projects(cluster.ClusterName).AddHandler(ctx, "resourceQuotaNamespacesReconcileController", reconcile.reconcileNamespaces)
 
 	calculate := &calculateLimitController{
 		nsIndexer:     nsInformer.GetIndexer(),
@@ -50,14 +44,14 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 		projects:      cluster.Management.Management.Projects(cluster.ClusterName),
 		clusterName:   cluster.ClusterName,
 	}
-	cluster.Core.Namespaces("").AddHandler("resourceQuotaUsedLimitController", calculate.calculateResourceQuotaUsed)
-	cluster.Management.Management.Projects(cluster.ClusterName).AddHandler("resourceQuotaProjectUsedLimitController", calculate.calculateResourceQuotaUsedProject)
+	cluster.Core.Namespaces("").AddHandler(ctx, "resourceQuotaUsedLimitController", calculate.calculateResourceQuotaUsed)
+	cluster.Management.Management.Projects(cluster.ClusterName).AddHandler(ctx, "resourceQuotaProjectUsedLimitController", calculate.calculateResourceQuotaUsedProject)
 
 	reset := &quotaResetController{
 		nsIndexer:  nsInformer.GetIndexer(),
 		namespaces: cluster.Core.Namespaces(""),
 	}
-	cluster.Management.Management.Projects(cluster.ClusterName).AddHandler("namespaceResourceQuotaResetController", reset.resetNamespaceQuota)
+	cluster.Management.Management.Projects(cluster.ClusterName).AddHandler(ctx, "namespaceResourceQuotaResetController", reset.resetNamespaceQuota)
 }
 
 func nsByProjectID(obj interface{}) ([]string, error) {

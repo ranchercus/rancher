@@ -24,7 +24,6 @@ import (
 	"time"
 
 	systemd "github.com/coreos/go-systemd/daemon"
-	"github.com/emicklei/go-restful-swagger12"
 	"github.com/golang/glog"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -43,7 +42,6 @@ import (
 	"k8s.io/apiserver/pkg/server/healthz"
 	"k8s.io/apiserver/pkg/server/routes"
 	restclient "k8s.io/client-go/rest"
-	openapicommon "k8s.io/kube-openapi/pkg/common"
 )
 
 // Info about an API group.
@@ -115,10 +113,6 @@ type GenericAPIServer struct {
 	// DiscoveryGroupManager serves /apis
 	DiscoveryGroupManager discovery.GroupManager
 
-	// Enable swagger and/or OpenAPI if these configs are non-nil.
-	swaggerConfig *swagger.Config
-	openAPIConfig *openapicommon.Config
-
 	// PostStartHooks are each called after the server has started listening, in a separate go func for each
 	// with no guarantee of ordering between them.  The map key is a name used for error reporting.
 	// It may kill the process with a panic if it wishes to by returning an error.
@@ -143,10 +137,6 @@ type GenericAPIServer struct {
 	// authorization check using the request URI but it may be necessary to make additional checks, such as in
 	// the create-on-update case
 	Authorizer authorizer.Authorizer
-
-	// enableAPIResponseCompression indicates whether API Responses should support compression
-	// if the client requests it via Accept-Encoding
-	enableAPIResponseCompression bool
 
 	// delegationTarget is the next delegate in the chain. This is never nil.
 	delegationTarget DelegationTarget
@@ -231,15 +221,6 @@ type preparedGenericAPIServer struct {
 
 // PrepareRun does post API installation setup steps.
 func (s *GenericAPIServer) PrepareRun() preparedGenericAPIServer {
-	if s.swaggerConfig != nil {
-		routes.Swagger{Config: s.swaggerConfig}.Install(s.Handler.GoRestfulContainer)
-	}
-	if s.openAPIConfig != nil {
-		routes.OpenAPI{
-			Config: s.openAPIConfig,
-		}.Install(s.Handler.GoRestfulContainer, s.Handler.NonGoRestfulMux)
-	}
-
 	s.installHealthz()
 
 	// Register audit backend preShutdownHook.
@@ -426,8 +407,6 @@ func (s *GenericAPIServer) newAPIGroupVersion(apiGroupInfo *APIGroupInfo, groupV
 
 		Admit:                        s.admissionControl,
 		MinRequestTimeout:            s.minRequestTimeout,
-		EnableAPIResponseCompression: s.enableAPIResponseCompression,
-		OpenAPIConfig:                s.openAPIConfig,
 		Authorizer:                   s.Authorizer,
 	}
 }

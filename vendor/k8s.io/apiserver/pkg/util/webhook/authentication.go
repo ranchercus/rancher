@@ -144,7 +144,6 @@ func restConfigFromKubeconfig(configAuthInfo *clientcmdapi.AuthInfo) (*rest.Conf
 			return nil, err
 		}
 		config.BearerToken = string(tokenBytes)
-		config.BearerTokenFile = configAuthInfo.TokenFile
 	}
 	if len(configAuthInfo.Impersonate) > 0 {
 		config.Impersonate = rest.ImpersonationConfig{

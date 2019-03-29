@@ -3,6 +3,8 @@ package endpoints
 import (
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"fmt"
 
 	workloadutil "github.com/rancher/rancher/pkg/controllers/user/workload"
@@ -20,9 +22,9 @@ type PodsController struct {
 	workloadController workloadutil.CommonController
 }
 
-func (c *PodsController) sync(key string, obj *corev1.Pod) error {
+func (c *PodsController) sync(key string, obj *corev1.Pod) (runtime.Object, error) {
 	if obj == nil && !strings.HasSuffix(key, allEndpoints) {
-		return nil
+		return nil, nil
 	}
 
 	var pods []*corev1.Pod
@@ -34,7 +36,7 @@ func (c *PodsController) sync(key string, obj *corev1.Pod) error {
 		}
 		pods, err = c.podLister.List(namespace, labels.NewSelector())
 		if err != nil {
-			return err
+			return nil, err
 		}
 	} else {
 		pods = append(pods, obj)
@@ -42,13 +44,13 @@ func (c *PodsController) sync(key string, obj *corev1.Pod) error {
 
 	workloadsToUpdate := map[string]*workloadutil.Workload{}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, pod := range pods {
 		if pod.Spec.NodeName != "" && podHasHostPort(pod) {
 			workloads, err := c.workloadController.GetWorkloadsMatchingLabels(pod.Namespace, pod.Labels)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			for _, w := range workloads {
 
@@ -75,7 +77,7 @@ func (c *PodsController) sync(key string, obj *corev1.Pod) error {
 		c.workloadController.EnqueueWorkload(w)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func podHasHostPort(obj *corev1.Pod) bool {

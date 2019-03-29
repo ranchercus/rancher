@@ -22,10 +22,7 @@ limitations under the License.
 package nodelifecycle
 
 import (
-	"context"
 	"fmt"
-	"hash/fnv"
-	"io"
 	"sync"
 	"time"
 
@@ -36,7 +33,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	coreinformers "k8s.io/client-go/informers/core/v1"
@@ -50,7 +46,6 @@ import (
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/client-go/util/workqueue"
 	v1node "k8s.io/kubernetes/pkg/api/v1/node"
-	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/nodelifecycle/scheduler"
 	nodeutil "k8s.io/kubernetes/pkg/controller/util/node"
@@ -143,7 +138,6 @@ type Controller struct {
 	taintManager *scheduler.NoExecuteTaintManager
 
 	podInformerSynced cache.InformerSynced
-	cloud             cloudprovider.Interface
 	kubeClient        clientset.Interface
 
 	// This timestamp is to be used instead of LastProbeTime stored in Condition. We do this
@@ -174,8 +168,6 @@ type Controller struct {
 
 	nodeLister                  corelisters.NodeLister
 	nodeInformerSynced          cache.InformerSynced
-	nodeExistsInCloudProvider   func(types.NodeName) (bool, error)
-	nodeShutdownInCloudProvider func(context.Context, *v1.Node) (bool, error)
 
 	recorder record.EventRecorder
 
@@ -214,10 +206,6 @@ type Controller struct {
 	// tainted nodes, if they're not tolerated.
 	runTaintManager bool
 
-	// if set to true Controller will taint Nodes with 'TaintNodeNotReady' and 'TaintNodeUnreachable'
-	// taints instead of evicting Pods itself.
-	useTaintBasedEvictions bool
-
 	// if set to true, NodeController will taint Nodes based on its condition for 'NetworkUnavailable',
 	// 'MemoryPressure', 'OutOfDisk' and 'DiskPressure'.
 	taintNodeByCondition bool
@@ -229,7 +217,6 @@ type Controller struct {
 func NewNodeLifecycleController(podInformer coreinformers.PodInformer,
 	nodeInformer coreinformers.NodeInformer,
 	daemonSetInformer extensionsinformers.DaemonSetInformer,
-	cloud cloudprovider.Interface,
 	kubeClient clientset.Interface,
 	nodeMonitorPeriod time.Duration,
 	nodeStartupGracePeriod time.Duration,
@@ -240,7 +227,6 @@ func NewNodeLifecycleController(podInformer coreinformers.PodInformer,
 	largeClusterThreshold int32,
 	unhealthyZoneThreshold float32,
 	runTaintManager bool,
-	useTaintBasedEvictions bool,
 	taintNodeByCondition bool) (*Controller, error) {
 
 	if kubeClient == nil {
@@ -255,17 +241,10 @@ func NewNodeLifecycleController(podInformer coreinformers.PodInformer,
 	}
 
 	nc := &Controller{
-		cloud:         cloud,
-		kubeClient:    kubeClient,
-		now:           metav1.Now,
-		knownNodeSet:  make(map[string]*v1.Node),
-		nodeStatusMap: make(map[string]nodeStatusData),
-		nodeExistsInCloudProvider: func(nodeName types.NodeName) (bool, error) {
-			return nodeutil.ExistsInCloudProvider(cloud, nodeName)
-		},
-		nodeShutdownInCloudProvider: func(ctx context.Context, node *v1.Node) (bool, error) {
-			return nodeutil.ShutdownInCloudProvider(ctx, cloud, node)
-		},
+		kubeClient:                  kubeClient,
+		now:                         metav1.Now,
+		knownNodeSet:                make(map[string]*v1.Node),
+		nodeStatusMap:               make(map[string]nodeStatusData),
 		recorder:                    recorder,
 		nodeMonitorPeriod:           nodeMonitorPeriod,
 		nodeStartupGracePeriod:      nodeStartupGracePeriod,
@@ -279,12 +258,8 @@ func NewNodeLifecycleController(podInformer coreinformers.PodInformer,
 		largeClusterThreshold:       largeClusterThreshold,
 		unhealthyZoneThreshold:      unhealthyZoneThreshold,
 		runTaintManager:             runTaintManager,
-		useTaintBasedEvictions:      useTaintBasedEvictions && runTaintManager,
 		taintNodeByCondition:        taintNodeByCondition,
 		nodeUpdateQueue:             workqueue.New(),
-	}
-	if useTaintBasedEvictions {
-		glog.Infof("Controller is using taint based evictions.")
 	}
 
 	nc.enterPartialDisruptionFunc = nc.ReducedQPSFunc
@@ -408,16 +383,10 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 		}
 	}
 
-	if nc.useTaintBasedEvictions {
-		// Handling taint based evictions. Because we don't want a dedicated logic in TaintManager for NC-originated
-		// taints and we normally don't rate limit evictions caused by taints, we need to rate limit adding taints.
-		go wait.Until(nc.doNoExecuteTaintingPass, scheduler.NodeEvictionPeriod, stopCh)
-	} else {
-		// Managing eviction of nodes:
-		// When we delete pods off a node, if the node was not empty at the time we then
-		// queue an eviction watcher. If we hit an error, retry deletion.
-		go wait.Until(nc.doEvictionPass, scheduler.NodeEvictionPeriod, stopCh)
-	}
+	// Managing eviction of nodes:
+	// When we delete pods off a node, if the node was not empty at the time we then
+	// queue an eviction watcher. If we hit an error, retry deletion.
+	go wait.Until(nc.doEvictionPass, scheduler.NodeEvictionPeriod, stopCh)
 
 	// Incorporate the results of node status pushed from kubelet to master.
 	go wait.Until(func() {
@@ -540,45 +509,6 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	return nil
 }
 
-func (nc *Controller) doNoExecuteTaintingPass() {
-	nc.evictorLock.Lock()
-	defer nc.evictorLock.Unlock()
-	for k := range nc.zoneNoExecuteTainter {
-		// Function should return 'false' and a time after which it should be retried, or 'true' if it shouldn't (it succeeded).
-		nc.zoneNoExecuteTainter[k].Try(func(value scheduler.TimedValue) (bool, time.Duration) {
-			node, err := nc.nodeLister.Get(value.Value)
-			if apierrors.IsNotFound(err) {
-				glog.Warningf("Node %v no longer present in nodeLister!", value.Value)
-				return true, 0
-			} else if err != nil {
-				glog.Warningf("Failed to get Node %v from the nodeLister: %v", value.Value, err)
-				// retry in 50 millisecond
-				return false, 50 * time.Millisecond
-			} else {
-				zone := utilnode.GetZoneKey(node)
-				evictionsNumber.WithLabelValues(zone).Inc()
-			}
-			_, condition := v1node.GetNodeCondition(&node.Status, v1.NodeReady)
-			// Because we want to mimic NodeStatus.Condition["Ready"] we make "unreachable" and "not ready" taints mutually exclusive.
-			taintToAdd := v1.Taint{}
-			oppositeTaint := v1.Taint{}
-			if condition.Status == v1.ConditionFalse {
-				taintToAdd = *NotReadyTaintTemplate
-				oppositeTaint = *UnreachableTaintTemplate
-			} else if condition.Status == v1.ConditionUnknown {
-				taintToAdd = *UnreachableTaintTemplate
-				oppositeTaint = *NotReadyTaintTemplate
-			} else {
-				// It seems that the Node is ready again, so there's no need to taint it.
-				glog.V(4).Infof("Node %v was in a taint queue, but it's ready now. Ignoring taint request.", value.Value)
-				return true, 0
-			}
-
-			return nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{&oppositeTaint}, node), 0
-		})
-	}
-}
-
 func (nc *Controller) doEvictionPass() {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
@@ -629,11 +559,7 @@ func (nc *Controller) monitorNodeStatus() error {
 		nodeutil.RecordNodeEvent(nc.recorder, added[i].Name, string(added[i].UID), v1.EventTypeNormal, "RegisteredNode", fmt.Sprintf("Registered Node %v in Controller", added[i].Name))
 		nc.knownNodeSet[added[i].Name] = added[i]
 		nc.addPodEvictorForNewZone(added[i])
-		if nc.useTaintBasedEvictions {
-			nc.markNodeAsReachable(added[i])
-		} else {
-			nc.cancelPodEviction(added[i])
-		}
+		nc.cancelPodEviction(added[i])
 	}
 
 	for i := range deleted {
@@ -675,72 +601,32 @@ func (nc *Controller) monitorNodeStatus() error {
 		if currentReadyCondition != nil {
 			// Check eviction timeout against decisionTimestamp
 			if observedReadyCondition.Status == v1.ConditionFalse {
-				if nc.useTaintBasedEvictions {
-					// We want to update the taint straight away if Node is already tainted with the UnreachableTaint
-					if taintutils.TaintExists(node.Spec.Taints, UnreachableTaintTemplate) {
-						taintToAdd := *NotReadyTaintTemplate
-						if !nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{UnreachableTaintTemplate}, node) {
-							glog.Errorf("Failed to instantly swap UnreachableTaint to NotReadyTaint. Will try again in the next cycle.")
-						}
-					} else if nc.markNodeForTainting(node) {
-						glog.V(2).Infof("Node %v is NotReady as of %v. Adding it to the Taint queue.",
+				if decisionTimestamp.After(nc.nodeStatusMap[node.Name].readyTransitionTimestamp.Add(nc.podEvictionTimeout)) {
+					if nc.evictPods(node) {
+						glog.V(2).Infof("Node is NotReady. Adding Pods on Node %s to eviction queue: %v is later than %v + %v",
 							node.Name,
 							decisionTimestamp,
+							nc.nodeStatusMap[node.Name].readyTransitionTimestamp,
+							nc.podEvictionTimeout,
 						)
-					}
-				} else {
-					if decisionTimestamp.After(nc.nodeStatusMap[node.Name].readyTransitionTimestamp.Add(nc.podEvictionTimeout)) {
-						if nc.evictPods(node) {
-							glog.V(2).Infof("Node is NotReady. Adding Pods on Node %s to eviction queue: %v is later than %v + %v",
-								node.Name,
-								decisionTimestamp,
-								nc.nodeStatusMap[node.Name].readyTransitionTimestamp,
-								nc.podEvictionTimeout,
-							)
-						}
 					}
 				}
 			}
 			if observedReadyCondition.Status == v1.ConditionUnknown {
-				if nc.useTaintBasedEvictions {
-					// We want to update the taint straight away if Node is already tainted with the UnreachableTaint
-					if taintutils.TaintExists(node.Spec.Taints, NotReadyTaintTemplate) {
-						taintToAdd := *UnreachableTaintTemplate
-						if !nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{NotReadyTaintTemplate}, node) {
-							glog.Errorf("Failed to instantly swap UnreachableTaint to NotReadyTaint. Will try again in the next cycle.")
-						}
-					} else if nc.markNodeForTainting(node) {
-						glog.V(2).Infof("Node %v is unresponsive as of %v. Adding it to the Taint queue.",
+				if decisionTimestamp.After(nc.nodeStatusMap[node.Name].probeTimestamp.Add(nc.podEvictionTimeout)) {
+					if nc.evictPods(node) {
+						glog.V(2).Infof("Node is unresponsive. Adding Pods on Node %s to eviction queues: %v is later than %v + %v",
 							node.Name,
 							decisionTimestamp,
+							nc.nodeStatusMap[node.Name].readyTransitionTimestamp,
+							nc.podEvictionTimeout-gracePeriod,
 						)
-					}
-				} else {
-					if decisionTimestamp.After(nc.nodeStatusMap[node.Name].probeTimestamp.Add(nc.podEvictionTimeout)) {
-						if nc.evictPods(node) {
-							glog.V(2).Infof("Node is unresponsive. Adding Pods on Node %s to eviction queues: %v is later than %v + %v",
-								node.Name,
-								decisionTimestamp,
-								nc.nodeStatusMap[node.Name].readyTransitionTimestamp,
-								nc.podEvictionTimeout-gracePeriod,
-							)
-						}
 					}
 				}
 			}
 			if observedReadyCondition.Status == v1.ConditionTrue {
-				if nc.useTaintBasedEvictions {
-					removed, err := nc.markNodeAsReachable(node)
-					if err != nil {
-						glog.Errorf("Failed to remove taints from node %v. Will retry in next iteration.", node.Name)
-					}
-					if removed {
-						glog.V(2).Infof("Node %s is healthy again, removing all taints", node.Name)
-					}
-				} else {
-					if nc.cancelPodEviction(node) {
-						glog.V(2).Infof("Node %s is ready again, cancelled pod eviction", node.Name)
-					}
+				if nc.cancelPodEviction(node) {
+					glog.V(2).Infof("Node %s is ready again, cancelled pod eviction", node.Name)
 				}
 				// remove shutdown taint this is needed always depending do we use taintbased or not
 				err := nc.markNodeAsNotShutdown(node)
@@ -754,42 +640,6 @@ func (nc *Controller) monitorNodeStatus() error {
 				nodeutil.RecordNodeStatusChange(nc.recorder, node, "NodeNotReady")
 				if err = nodeutil.MarkAllPodsNotReady(nc.kubeClient, node); err != nil {
 					utilruntime.HandleError(fmt.Errorf("Unable to mark all pods NotReady on node %v: %v", node.Name, err))
-				}
-			}
-
-			// Check with the cloud provider to see if the node still exists. If it
-			// doesn't, delete the node immediately.
-			if currentReadyCondition.Status != v1.ConditionTrue && nc.cloud != nil {
-				// check is node shutdowned, if yes do not deleted it. Instead add taint
-				shutdown, err := nc.nodeShutdownInCloudProvider(context.TODO(), node)
-				if err != nil {
-					glog.Errorf("Error determining if node %v shutdown in cloud: %v", node.Name, err)
-				}
-				// node shutdown
-				if shutdown && err == nil {
-					err = controller.AddOrUpdateTaintOnNode(nc.kubeClient, node.Name, controller.ShutdownTaint)
-					if err != nil {
-						glog.Errorf("Error patching node taints: %v", err)
-					}
-					continue
-				}
-				exists, err := nc.nodeExistsInCloudProvider(types.NodeName(node.Name))
-				if err != nil {
-					glog.Errorf("Error determining if node %v exists in cloud: %v", node.Name, err)
-					continue
-				}
-				if !exists {
-					glog.V(2).Infof("Deleting node (no longer present in cloud provider): %s", node.Name)
-					nodeutil.RecordNodeEvent(nc.recorder, node.Name, string(node.UID), v1.EventTypeNormal, "DeletingNode", fmt.Sprintf("Deleting Node %v because it's not present according to cloud provider", node.Name))
-					go func(nodeName string) {
-						defer utilruntime.HandleCrash()
-						// Kubelet is not reporting and Cloud Provider says node
-						// is gone. Delete it without worrying about grace
-						// periods.
-						if err := nodeutil.ForcefullyDeleteNode(nc.kubeClient, nodeName); err != nil {
-							glog.Errorf("Unable to forcefully delete node %q: %v", nodeName, err)
-						}
-					}(node.Name)
 				}
 			}
 		}
@@ -1014,22 +864,11 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 		if allAreFullyDisrupted {
 			glog.V(0).Info("Controller detected that all Nodes are not-Ready. Entering master disruption mode.")
 			for i := range nodes {
-				if nc.useTaintBasedEvictions {
-					_, err := nc.markNodeAsReachable(nodes[i])
-					if err != nil {
-						glog.Errorf("Failed to remove taints from Node %v", nodes[i].Name)
-					}
-				} else {
-					nc.cancelPodEviction(nodes[i])
-				}
+				nc.cancelPodEviction(nodes[i])
 			}
 			// We stop all evictions.
 			for k := range nc.zoneStates {
-				if nc.useTaintBasedEvictions {
-					nc.zoneNoExecuteTainter[k].SwapLimiter(0)
-				} else {
-					nc.zonePodEvictor[k].SwapLimiter(0)
-				}
+				nc.zonePodEvictor[k].SwapLimiter(0)
 			}
 			for k := range nc.zoneStates {
 				nc.zoneStates[k] = stateFullDisruption
@@ -1072,27 +911,13 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneState) {
 	switch state {
 	case stateNormal:
-		if nc.useTaintBasedEvictions {
-			nc.zoneNoExecuteTainter[zone].SwapLimiter(nc.evictionLimiterQPS)
-		} else {
-			nc.zonePodEvictor[zone].SwapLimiter(nc.evictionLimiterQPS)
-		}
+		nc.zonePodEvictor[zone].SwapLimiter(nc.evictionLimiterQPS)
 	case statePartialDisruption:
-		if nc.useTaintBasedEvictions {
-			nc.zoneNoExecuteTainter[zone].SwapLimiter(
-				nc.enterPartialDisruptionFunc(zoneSize))
-		} else {
-			nc.zonePodEvictor[zone].SwapLimiter(
-				nc.enterPartialDisruptionFunc(zoneSize))
-		}
+		nc.zonePodEvictor[zone].SwapLimiter(
+			nc.enterPartialDisruptionFunc(zoneSize))
 	case stateFullDisruption:
-		if nc.useTaintBasedEvictions {
-			nc.zoneNoExecuteTainter[zone].SwapLimiter(
-				nc.enterFullDisruptionFunc(zoneSize))
-		} else {
-			nc.zonePodEvictor[zone].SwapLimiter(
-				nc.enterFullDisruptionFunc(zoneSize))
-		}
+		nc.zonePodEvictor[zone].SwapLimiter(
+			nc.enterFullDisruptionFunc(zoneSize))
 	}
 }
 
@@ -1152,15 +977,9 @@ func (nc *Controller) addPodEvictorForNewZone(node *v1.Node) {
 	zone := utilnode.GetZoneKey(node)
 	if _, found := nc.zoneStates[zone]; !found {
 		nc.zoneStates[zone] = stateInitial
-		if !nc.useTaintBasedEvictions {
-			nc.zonePodEvictor[zone] =
-				scheduler.NewRateLimitedTimedQueue(
-					flowcontrol.NewTokenBucketRateLimiter(nc.evictionLimiterQPS, scheduler.EvictionRateLimiterBurst))
-		} else {
-			nc.zoneNoExecuteTainter[zone] =
-				scheduler.NewRateLimitedTimedQueue(
-					flowcontrol.NewTokenBucketRateLimiter(nc.evictionLimiterQPS, scheduler.EvictionRateLimiterBurst))
-		}
+		nc.zonePodEvictor[zone] =
+			scheduler.NewRateLimitedTimedQueue(
+				flowcontrol.NewTokenBucketRateLimiter(nc.evictionLimiterQPS, scheduler.EvictionRateLimiterBurst))
 		// Init the metric for the new zone.
 		glog.Infof("Initializing eviction metric for zone: %v", zone)
 		evictionsNumber.WithLabelValues(zone).Add(0)
@@ -1245,10 +1064,4 @@ func (nc *Controller) ComputeZoneState(nodeReadyConditions []*v1.NodeCondition) 
 	default:
 		return notReadyNodes, stateNormal
 	}
-}
-
-func hash(val string, max int) int {
-	hasher := fnv.New32a()
-	io.WriteString(hasher, val)
-	return int(hasher.Sum32()) % max
 }

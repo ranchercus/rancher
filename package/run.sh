@@ -147,9 +147,9 @@ fi
 
 if [ "$CATTLE_CLUSTER" != "true" ]; then
     if [ ! -w /var/run/docker.sock ] || [ ! -S /var/run/docker.sock ]; then
-        error Please bind mount in the docker socket to /var/run/docker.sock
-        error example:  docker run -v /var/run/docker.sock:/var/run/docker.sock ...
-        exit 1
+        warn "Docker socket is not available!"
+        warn "Please bind mount in the docker socket to /var/run/docker.sock if docker errors occur"
+        warn "example:  docker run -v /var/run/docker.sock:/var/run/docker.sock ..."
     fi
 fi
 
@@ -211,11 +211,21 @@ else
     info "${CATTLE_SERVER_PING} is accessible"
 fi
 
+# Extract hostname from URL
+CATTLE_SERVER_HOSTNAME=$(echo $CATTLE_SERVER | sed -e 's/[^/]*\/\/\([^@]*@\)\?\([^:/]*\).*/\2/')
+# Resolve IPv4 address(es) from hostname
+RESOLVED_ADDR=$(getent ahostsv4 $CATTLE_SERVER_HOSTNAME | sed -n 's/ *STREAM.*//p')
+
+# If CATTLE_SERVER_HOSTNAME equals RESOLVED_ADDR, its an IP address and there is nothing to resolve
+if [ "${CATTLE_SERVER_HOSTNAME}" != "${RESOLVED_ADDR}" ]; then
+  info "${CATTLE_SERVER_HOSTNAME} resolves to $(echo $RESOLVED_ADDR)"
+fi
+
 if [ -n "$CATTLE_CA_CHECKSUM" ]; then
     temp=$(mktemp)
-    curl --insecure -s -fL $CATTLE_SERVER/v3/settings/cacerts | jq -r .value > $temp
+    curl --insecure -s -fL $CATTLE_SERVER/v3/settings/cacerts | jq -r '.value | select(length > 0)' > $temp
     if [ ! -s $temp ]; then
-      error "Failed to pull the cacert from the rancher server settings at $CATTLE_SERVER/v3/settings/cacerts"
+      error "The environment variable CATTLE_CA_CHECKSUM is set but there is no CA certificate configured at $CATTLE_SERVER/v3/settings/cacerts"
       exit 1
     fi
     err=$(check_x509_cert $temp)

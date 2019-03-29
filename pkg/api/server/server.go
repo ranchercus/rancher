@@ -7,11 +7,13 @@ import (
 	"github.com/rancher/norman/api/builtin"
 	"github.com/rancher/norman/pkg/subscribe"
 	rancherapi "github.com/rancher/rancher/pkg/api"
+	"github.com/rancher/rancher/pkg/api/controllers/catalog"
 	"github.com/rancher/rancher/pkg/api/controllers/dynamicschema"
 	"github.com/rancher/rancher/pkg/api/controllers/samlconfig"
 	"github.com/rancher/rancher/pkg/api/controllers/settings"
 	"github.com/rancher/rancher/pkg/api/controllers/usercontrollers"
-	"github.com/rancher/rancher/pkg/api/controllers/whitelistproxy"
+	whitelistproxyKontainerDriver "github.com/rancher/rancher/pkg/api/controllers/whitelistproxy/kontainerdriver"
+	whitelistproxyNodeDriver "github.com/rancher/rancher/pkg/api/controllers/whitelistproxy/nodedriver"
 	"github.com/rancher/rancher/pkg/api/server/managementstored"
 	"github.com/rancher/rancher/pkg/api/server/userstored"
 	"github.com/rancher/rancher/pkg/clustermanager"
@@ -22,13 +24,13 @@ import (
 )
 
 func New(ctx context.Context, scaledContext *config.ScaledContext, clusterManager *clustermanager.Manager,
-	k8sProxy http.Handler) (http.Handler, error) {
+	k8sProxy http.Handler, localClusterEnabled bool) (http.Handler, error) {
 	subscribe.Register(&builtin.Version, scaledContext.Schemas)
 	subscribe.Register(&managementSchema.Version, scaledContext.Schemas)
 	subscribe.Register(&clusterSchema.Version, scaledContext.Schemas)
 	subscribe.Register(&projectSchema.Version, scaledContext.Schemas)
 
-	if err := managementstored.Setup(ctx, scaledContext, clusterManager, k8sProxy); err != nil {
+	if err := managementstored.Setup(ctx, scaledContext, clusterManager, k8sProxy, localClusterEnabled); err != nil {
 		return nil, err
 	}
 
@@ -42,9 +44,11 @@ func New(ctx context.Context, scaledContext *config.ScaledContext, clusterManage
 	}
 	server.AccessControl = scaledContext.AccessControl
 
-	dynamicschema.Register(scaledContext, server.Schemas)
-	whitelistproxy.Register(scaledContext)
-	samlconfig.Register(scaledContext)
+	catalog.Register(ctx, scaledContext)
+	dynamicschema.Register(ctx, scaledContext, server.Schemas)
+	whitelistproxyNodeDriver.Register(ctx, scaledContext)
+	whitelistproxyKontainerDriver.Register(ctx, scaledContext)
+	samlconfig.Register(ctx, scaledContext)
 	usercontrollers.Register(ctx, scaledContext, clusterManager)
 	err = settings.Register(scaledContext)
 

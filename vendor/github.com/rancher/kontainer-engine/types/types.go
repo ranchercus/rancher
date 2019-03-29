@@ -13,9 +13,16 @@ const (
 	BoolPointerType = "boolPtr"
 	// IntType is the type for int flag
 	IntType = "int"
+	// IntPointerType flag should be used if the int value can be nil
+	IntPointerType = "intPtr"
 	// StringSliceType is the type for stringSlice flag
 	StringSliceType = "stringSlice"
 )
+
+type CloseableDriver interface {
+	Driver
+	Close() error
+}
 
 // Driver defines the interface that each driver plugin should implement
 type Driver interface {
@@ -47,6 +54,10 @@ type Driver interface {
 
 	// Remove legacy service account token
 	RemoveLegacyServiceAccount(ctx context.Context, clusterInfo *ClusterInfo) error
+
+	ETCDSave(ctx context.Context, clusterInfo *ClusterInfo, opts *DriverOptions, snapshotName string) error
+	ETCDRestore(ctx context.Context, clusterInfo *ClusterInfo, opts *DriverOptions, snapshotName string) (*ClusterInfo, error)
+	GetK8SCapabilities(ctx context.Context, opts *DriverOptions) (*K8SCapabilities, error)
 }
 
 type UnimplementedVersionAccess struct {

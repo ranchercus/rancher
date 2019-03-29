@@ -1,15 +1,12 @@
 package api
 
 import (
-	"strings"
-
-	"github.com/rancher/norman/api"
 	normanapi "github.com/rancher/norman/api"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/rancher/pkg/settings"
 )
 
-func NewServer(schemas *types.Schemas) (*api.Server, error) {
+func NewServer(schemas *types.Schemas) (*normanapi.Server, error) {
 	server := normanapi.NewAPIServer()
 	if err := server.AddSchemas(schemas); err != nil {
 		return nil, err
@@ -19,14 +16,14 @@ func NewServer(schemas *types.Schemas) (*api.Server, error) {
 }
 
 func cssURL() string {
-	if !strings.HasPrefix(settings.ServerVersion.Get(), "v") {
+	if settings.UIIndex.Get() != "local" {
 		return ""
 	}
 	return "/api-ui/ui.min.css"
 }
 
 func jsURL() string {
-	if !strings.HasPrefix(settings.ServerVersion.Get(), "v") {
+	if settings.UIIndex.Get() != "local" {
 		return ""
 	}
 	return "/api-ui/ui.min.js"

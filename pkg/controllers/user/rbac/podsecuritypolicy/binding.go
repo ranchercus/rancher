@@ -1,7 +1,10 @@
 package podsecuritypolicy
 
 import (
+	"context"
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/extensions/v1beta1"
@@ -21,7 +24,7 @@ const namespaceByProjectNameIndex = "podsecuritypolicy.rbac.user.cattle.io/by-pr
 
 // RegisterBindings updates the pod security policy for this binding if it has been changed.  Also resync service
 // accounts so they pick up the change.  If no policy exists then exits without doing anything.
-func RegisterBindings(context *config.UserContext) {
+func RegisterBindings(ctx context.Context, context *config.UserContext) {
 	logrus.Infof("registering podsecuritypolicy project handler for cluster %v", context.ClusterName)
 
 	namespaceInformer := context.Core.Namespaces("").Controller().Informer()
@@ -44,7 +47,7 @@ func RegisterBindings(context *config.UserContext) {
 	}
 
 	context.Management.Management.PodSecurityPolicyTemplateProjectBindings("").
-		AddLifecycle("PodSecurityPolicyTemplateProjectBindingsLifecycleHandler", lifecycle)
+		AddLifecycle(ctx, "PodSecurityPolicyTemplateProjectBindingsLifecycleHandler", lifecycle)
 }
 
 func namespaceByProjectName(obj interface{}) ([]string, error) {
@@ -69,19 +72,19 @@ type lifecycle struct {
 	namespaceIndexer cache.Indexer
 }
 
-func (l *lifecycle) Create(obj *v3.PodSecurityPolicyTemplateProjectBinding) (*v3.PodSecurityPolicyTemplateProjectBinding, error) {
+func (l *lifecycle) Create(obj *v3.PodSecurityPolicyTemplateProjectBinding) (runtime.Object, error) {
 	return l.sync(obj)
 }
 
-func (l *lifecycle) Updated(obj *v3.PodSecurityPolicyTemplateProjectBinding) (*v3.PodSecurityPolicyTemplateProjectBinding, error) {
+func (l *lifecycle) Updated(obj *v3.PodSecurityPolicyTemplateProjectBinding) (runtime.Object, error) {
 	return l.sync(obj)
 }
 
-func (l *lifecycle) Remove(obj *v3.PodSecurityPolicyTemplateProjectBinding) (*v3.PodSecurityPolicyTemplateProjectBinding, error) {
+func (l *lifecycle) Remove(obj *v3.PodSecurityPolicyTemplateProjectBinding) (runtime.Object, error) {
 	return obj, l.syncNamespacesInProject(obj.TargetProjectName)
 }
 
-func (l *lifecycle) sync(obj *v3.PodSecurityPolicyTemplateProjectBinding) (*v3.PodSecurityPolicyTemplateProjectBinding, error) {
+func (l *lifecycle) sync(obj *v3.PodSecurityPolicyTemplateProjectBinding) (runtime.Object, error) {
 	if obj.PodSecurityPolicyTemplateName == "" {
 		return obj, nil
 	}

@@ -1,6 +1,7 @@
 package rbac
 
 import (
+	"k8s.io/apimachinery/pkg/runtime"
 	"regexp"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -24,25 +25,25 @@ type crbCleaner struct {
 	m *manager
 }
 
-func (p *crbCleaner) sync(key string, obj *rbacv1.ClusterRoleBinding) error {
+func (p *crbCleaner) sync(key string, obj *rbacv1.ClusterRoleBinding) (runtime.Object, error) {
 	if key == "" || obj == nil {
-		return nil
+		return nil, nil
 	}
 
 	eligible, err := p.eligibleForDeletion(obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if eligible {
 		if err := p.m.workload.RBAC.ClusterRoleBindings("").Delete(obj.Name, &metav1.DeleteOptions{}); err != nil {
 			if !errors.IsNotFound(err) {
-				return err
+				return nil, err
 			}
 		}
 	}
 
-	return nil
+	return obj, nil
 }
 
 func (p *crbCleaner) eligibleForDeletion(crb *rbacv1.ClusterRoleBinding) (bool, error) {

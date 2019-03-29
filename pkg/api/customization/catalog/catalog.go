@@ -1,17 +1,17 @@
 package catalog
 
 import (
-	"time"
-
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	"github.com/ghodss/yaml"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
+	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/compose"
@@ -28,7 +28,9 @@ func CollectionFormatter(request *types.APIContext, collection *types.GenericCol
 }
 
 type ActionHandler struct {
-	CatalogClient v3.CatalogInterface
+	CatalogClient        v3.CatalogInterface
+	ProjectCatalogClient v3.ProjectCatalogInterface
+	ClusterCatalogClient v3.ClusterCatalogInterface
 }
 
 func (a ActionHandler) RefreshActionHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
@@ -59,6 +61,10 @@ func (a ActionHandler) RefreshActionHandler(actionName string, action *types.Act
 			return err
 		}
 	}
+	data := map[string]interface{}{
+		"catalogs": catalogs,
+	}
+	apiContext.WriteResponse(http.StatusOK, data)
 	return nil
 }
 
@@ -83,6 +89,7 @@ func (a ActionHandler) ExportYamlHandler(apiContext *types.APIContext, next type
 		}
 		delete(m["catalogs"].(map[string]interface{})[catalog.Name].(map[string]interface{}), "actions")
 		delete(m["catalogs"].(map[string]interface{})[catalog.Name].(map[string]interface{}), "links")
+		delete(m["catalogs"].(map[string]interface{})[catalog.Name].(map[string]interface{}), "password")
 		data, err := json.Marshal(m)
 		if err != nil {
 			return err
@@ -97,5 +104,77 @@ func (a ActionHandler) ExportYamlHandler(apiContext *types.APIContext, next type
 		http.ServeContent(apiContext.Response, apiContext.Request, "exportYaml", time.Now(), reader)
 		return nil
 	}
+	return nil
+}
+
+func (a ActionHandler) RefreshProjectCatalogActionHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	if actionName != "refresh" {
+		return httperror.NewAPIError(httperror.NotFound, "not found")
+	}
+
+	prjCatalogs := []v3.ProjectCatalog{}
+	if apiContext.ID != "" {
+		ns, name := ref.Parse(apiContext.ID)
+		catalog, err := a.ProjectCatalogClient.GetNamespaced(ns, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		prjCatalogs = append(prjCatalogs, *catalog)
+	} else {
+		catalogList, err := a.ProjectCatalogClient.List(metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		for _, catalog := range catalogList.Items {
+			prjCatalogs = append(prjCatalogs, catalog)
+		}
+	}
+	for _, catalog := range prjCatalogs {
+		catalog.Status.LastRefreshTimestamp = time.Now().Format(time.RFC3339)
+		v3.CatalogConditionRefreshed.Unknown(&catalog)
+		if _, err := a.ProjectCatalogClient.Update(&catalog); err != nil {
+			return err
+		}
+	}
+	data := map[string]interface{}{
+		"catalogs": prjCatalogs,
+	}
+	apiContext.WriteResponse(http.StatusOK, data)
+	return nil
+}
+
+func (a ActionHandler) RefreshClusterCatalogActionHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	if actionName != "refresh" {
+		return httperror.NewAPIError(httperror.NotFound, "not found")
+	}
+
+	clCatalogs := []v3.ClusterCatalog{}
+	if apiContext.ID != "" {
+		ns, name := ref.Parse(apiContext.ID)
+		catalog, err := a.ClusterCatalogClient.GetNamespaced(ns, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		clCatalogs = append(clCatalogs, *catalog)
+	} else {
+		catalogList, err := a.ClusterCatalogClient.List(metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		for _, catalog := range catalogList.Items {
+			clCatalogs = append(clCatalogs, catalog)
+		}
+	}
+	for _, catalog := range clCatalogs {
+		catalog.Status.LastRefreshTimestamp = time.Now().Format(time.RFC3339)
+		v3.CatalogConditionRefreshed.Unknown(&catalog)
+		if _, err := a.ClusterCatalogClient.Update(&catalog); err != nil {
+			return err
+		}
+	}
+	data := map[string]interface{}{
+		"catalogs": clCatalogs,
+	}
+	apiContext.WriteResponse(http.StatusOK, data)
 	return nil
 }

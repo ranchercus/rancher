@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -57,9 +56,13 @@ func buildCreateCommand(node *v3.Node, configMap map[string]interface{}) []strin
 
 	for k, v := range configMap {
 		dmField := "--" + sDriver + "-" + strings.ToLower(regExHyphen.ReplaceAllString(k, "${1}-${2}"))
+		if v == nil {
+			continue
+		}
+
 		switch v.(type) {
-		case int64:
-			cmd = append(cmd, dmField, strconv.FormatInt(v.(int64), 10))
+		case float64:
+			cmd = append(cmd, dmField, fmt.Sprintf("%v", v))
 		case string:
 			if v.(string) != "" {
 				cmd = append(cmd, dmField, v.(string))
@@ -168,7 +171,7 @@ func (m *Lifecycle) reportStatus(stdoutReader io.Reader, stderrReader io.Reader,
 		if err != nil {
 			return node, err
 		}
-		m.logger.Info(node, msg)
+		logrus.Info(msg)
 		v3.NodeConditionProvisioned.Message(node, msg)
 		// ignore update errors
 		if newObj, err := m.nodeClient.Update(node); err == nil {

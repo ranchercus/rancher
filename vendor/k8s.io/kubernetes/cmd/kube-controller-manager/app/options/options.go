@@ -19,7 +19,6 @@ limitations under the License.
 package options
 
 import (
-	"fmt"
 	"net"
 
 	"k8s.io/api/core/v1"
@@ -83,7 +82,6 @@ type KubeControllerManagerOptions struct {
 	// TODO: remove insecure serving mode
 	InsecureServing *apiserveroptions.DeprecatedInsecureServingOptionsWithLoopback
 	Authentication  *apiserveroptions.DelegatingAuthenticationOptions
-	Authorization   *apiserveroptions.DelegatingAuthorizationOptions
 
 	Master     string
 	Kubeconfig string
@@ -183,12 +181,9 @@ func NewKubeControllerManagerOptions() (*KubeControllerManagerOptions, error) {
 			BindNetwork: "tcp",
 		}).WithLoopback(),
 		Authentication: apiserveroptions.NewDelegatingAuthenticationOptions(),
-		Authorization:  apiserveroptions.NewDelegatingAuthorizationOptions(),
 	}
 
 	s.Authentication.RemoteKubeConfigFileOptional = true
-	s.Authorization.RemoteKubeConfigFileOptional = true
-	s.Authorization.AlwaysAllowPaths = []string{"/healthz"}
 
 	s.SecureServing.ServerCert.CertDirectory = "/var/run/kubernetes"
 	s.SecureServing.ServerCert.PairName = "kube-controller-manager"
@@ -235,7 +230,6 @@ func (s *KubeControllerManagerOptions) Flags(allControllers []string, disabledBy
 	s.SecureServing.AddFlags(fss.FlagSet("secure serving"))
 	s.InsecureServing.AddUnqualifiedFlags(fss.FlagSet("insecure serving"))
 	s.Authentication.AddFlags(fss.FlagSet("authentication"))
-	s.Authorization.AddFlags(fss.FlagSet("authorization"))
 
 	s.AttachDetachController.AddFlags(fss.FlagSet("attachdetach controller"))
 	s.CSRSigningController.AddFlags(fss.FlagSet("csrsigning controller"))
@@ -343,10 +337,7 @@ func (s *KubeControllerManagerOptions) ApplyTo(c *kubecontrollerconfig.Config) e
 		return err
 	}
 	if s.SecureServing.BindPort != 0 || s.SecureServing.Listener != nil {
-		if err := s.Authentication.ApplyTo(&c.Authentication, c.SecureServing, nil); err != nil {
-			return err
-		}
-		if err := s.Authorization.ApplyTo(&c.Authorization); err != nil {
+		if err := s.Authentication.ApplyTo(&c.Authentication, c.SecureServing); err != nil {
 			return err
 		}
 	}
@@ -388,7 +379,6 @@ func (s *KubeControllerManagerOptions) Validate(allControllers []string, disable
 	errs = append(errs, s.SecureServing.Validate()...)
 	errs = append(errs, s.InsecureServing.Validate()...)
 	errs = append(errs, s.Authentication.Validate()...)
-	errs = append(errs, s.Authorization.Validate()...)
 
 	// TODO: validate component config, master and kubeconfig
 
@@ -399,10 +389,6 @@ func (s *KubeControllerManagerOptions) Validate(allControllers []string, disable
 func (s KubeControllerManagerOptions) Config(allControllers []string, disabledByDefaultControllers []string) (*kubecontrollerconfig.Config, error) {
 	if err := s.Validate(allControllers, disabledByDefaultControllers); err != nil {
 		return nil, err
-	}
-
-	if err := s.SecureServing.MaybeDefaultWithSelfSignedCerts("localhost", nil, []net.IP{net.ParseIP("127.0.0.1")}); err != nil {
-		return nil, fmt.Errorf("error creating self-signed certificates: %v", err)
 	}
 
 	kubeconfig, err := clientcmd.BuildConfigFromFlags(s.Master, s.Kubeconfig)

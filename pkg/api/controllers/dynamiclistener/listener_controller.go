@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 type Controller struct {
@@ -45,26 +46,26 @@ func Start(ctx context.Context, context *config.ScaledContext, httpPort, httpsPo
 		listenConfig:       context.Management.ListenConfigs(""),
 		listenConfigLister: context.Management.ListenConfigs("").Controller().Lister(),
 	}
-	context.Management.ListenConfigs("").AddHandler("listener", c.sync)
+	context.Management.ListenConfigs("").AddHandler(ctx, "listener", c.sync)
 	go func() {
 		<-ctx.Done()
 		c.server.Shutdown()
 	}()
 }
 
-func (c *Controller) sync(key string, listener *v3.ListenConfig) error {
+func (c *Controller) sync(key string, listener *v3.ListenConfig) (runtime.Object, error) {
 	if listener == nil {
-		return nil
+		return nil, nil
 	}
 
 	if listener.Enabled {
-		return c.enable(listener)
+		return nil, c.enable(listener)
 	}
 
 	c.server.Disable(listener)
 	allConfigs, err := c.listenConfigLister.List("", labels.Everything())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var lastConfig *v3.ListenConfig
@@ -78,10 +79,10 @@ func (c *Controller) sync(key string, listener *v3.ListenConfig) error {
 	}
 
 	if lastConfig != nil {
-		return c.enable(listener)
+		return nil, c.enable(listener)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func (c *Controller) enable(listener *v3.ListenConfig) error {

@@ -2,12 +2,16 @@ package pipeline
 
 import (
 	"context"
+
 	"github.com/rancher/rancher/pkg/pipeline/providers"
 	"github.com/rancher/rancher/pkg/pipeline/remote"
+	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config"
 	"github.com/satori/go.uuid"
+	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // This controller is responsible for watching pipelines and handling
@@ -16,33 +20,37 @@ import (
 type Lifecycle struct {
 	clusterName                string
 	sourceCodeCredentialLister v3.SourceCodeCredentialLister
+	sourceCodeCredentials      v3.SourceCodeCredentialInterface
 }
 
 func Register(ctx context.Context, cluster *config.UserContext) {
 	clusterName := cluster.ClusterName
 	pipelines := cluster.Management.Project.Pipelines("")
-	sourceCodeCredentialLister := cluster.Management.Project.SourceCodeCredentials("").Controller().Lister()
+	sourceCodeCredentials := cluster.Management.Project.SourceCodeCredentials("")
+	sourceCodeCredentialLister := sourceCodeCredentials.Controller().Lister()
 
 	pipelineLifecycle := &Lifecycle{
 		clusterName:                clusterName,
 		sourceCodeCredentialLister: sourceCodeCredentialLister,
+		sourceCodeCredentials:      sourceCodeCredentials,
 	}
 
-	pipelines.AddClusterScopedLifecycle("pipeline-controller", cluster.ClusterName, pipelineLifecycle)
+	pipelines.AddClusterScopedLifecycle(ctx, "pipeline-controller", cluster.ClusterName, pipelineLifecycle)
 }
 
-func (l *Lifecycle) Create(obj *v3.Pipeline) (*v3.Pipeline, error) {
+func (l *Lifecycle) Create(obj *v3.Pipeline) (runtime.Object, error) {
+	return obj, nil
+}
+
+func (l *Lifecycle) Updated(obj *v3.Pipeline) (runtime.Object, error) {
 	return l.sync(obj)
 }
 
-func (l *Lifecycle) Updated(obj *v3.Pipeline) (*v3.Pipeline, error) {
-	return l.sync(obj)
-}
-
-func (l *Lifecycle) Remove(obj *v3.Pipeline) (*v3.Pipeline, error) {
+func (l *Lifecycle) Remove(obj *v3.Pipeline) (runtime.Object, error) {
 	if obj.Status.WebHookID != "" {
 		if err := l.deleteHook(obj); err != nil {
-			return obj, err
+			logrus.WithError(err).Warnf("fail to delete webhook for pipeline %q", obj.Name)
+			return obj, nil
 		}
 	}
 	return obj, nil
@@ -95,7 +103,6 @@ func (l *Lifecycle) createHook(obj *v3.Pipeline) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	accessToken := credential.Spec.AccessToken
 	_, projID := ref.Parse(obj.Spec.ProjectName)
 	scpConfig, err := providers.GetSourceCodeProviderConfig(credential.Spec.SourceCodeType, projID)
 	if err != nil {
@@ -105,7 +112,10 @@ func (l *Lifecycle) createHook(obj *v3.Pipeline) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
+	accessToken, err := utils.EnsureAccessToken(l.sourceCodeCredentials, remote, credential)
+	if err != nil {
+		return "", err
+	}
 	id, err := remote.CreateHook(obj, accessToken)
 	if err != nil {
 		return "", err
@@ -121,7 +131,6 @@ func (l *Lifecycle) deleteHook(obj *v3.Pipeline) error {
 	if err != nil {
 		return err
 	}
-	accessToken := credential.Spec.AccessToken
 	_, projID := ref.Parse(obj.Spec.ProjectName)
 	scpConfig, err := providers.GetSourceCodeProviderConfig(credential.Spec.SourceCodeType, projID)
 	if err != nil {
@@ -131,7 +140,10 @@ func (l *Lifecycle) deleteHook(obj *v3.Pipeline) error {
 	if err != nil {
 		return err
 	}
-
+	accessToken, err := utils.EnsureAccessToken(l.sourceCodeCredentials, remote, credential)
+	if err != nil {
+		return err
+	}
 	return remote.DeleteHook(obj, accessToken)
 }
 

@@ -2,11 +2,13 @@ package ldap
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mitchellh/mapstructure"
 	"github.com/rancher/norman/api/handler"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
@@ -52,13 +54,21 @@ func (p *ldapProvider) testAndApply(actionName string, action *types.Action, req
 		return httperror.NewAPIError(httperror.InvalidBodyContent,
 			fmt.Sprintf("Failed to parse body: %v", err))
 	}
-	logrus.Debugf("configApplyInput %v", configApplyInput)
 
 	config := &configApplyInput.LdapConfig
 
 	login := &v3public.BasicLogin{
 		Username: configApplyInput.Username,
 		Password: configApplyInput.Password,
+	}
+
+	if config.ServiceAccountPassword != "" {
+		value, err := common.ReadFromSecret(p.secrets, config.ServiceAccountPassword,
+			strings.ToLower(auth.TypeToField[client.FreeIpaConfigType]))
+		if err != nil {
+			return err
+		}
+		config.ServiceAccountPassword = value
 	}
 
 	caPool, err := newCAPool(config.Certificate)
@@ -72,7 +82,6 @@ func (p *ldapProvider) testAndApply(actionName string, action *types.Action, req
 	if len(config.Servers) > 1 {
 		return httperror.NewAPIError(httperror.InvalidBodyContent, "multiple servers not yet supported")
 	}
-
 	userPrincipal, groupPrincipals, err := p.loginUser(login, config, caPool)
 	if err != nil {
 		return err
@@ -106,6 +115,14 @@ func (p *ldapProvider) saveLDAPConfig(config *v3.LdapConfig) error {
 	}
 
 	config.ObjectMeta = storedConfig.ObjectMeta
+
+	field := strings.ToLower(auth.TypeToField[config.Type])
+	if err := common.CreateOrUpdateSecrets(p.secrets, config.ServiceAccountPassword,
+		field, strings.ToLower(config.Type)); err != nil {
+		return err
+	}
+
+	config.ServiceAccountPassword = common.GetName(config.Type, field)
 
 	logrus.Debugf("updating %s config", p.providerName)
 	_, err = p.authConfigs.ObjectClient().Update(config.ObjectMeta.Name, config)

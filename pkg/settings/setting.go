@@ -3,16 +3,18 @@ package settings
 import (
 	"encoding/json"
 	"os"
+	"strings"
 
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 )
 
 var (
-	settings   = map[string]Setting{}
-	provider   Provider
-	RKEVersion string
+	settings       = map[string]Setting{}
+	provider       Provider
+	InjectDefaults string
 
 	AgentImage                      = NewSetting("agent-image", "rancher/rancher-agent:master")
+	AuthImage                       = NewSetting("auth-image", v3.ToolsSystemImages.AuthSystemImages.KubeAPIAuth)
 	WindowsAgentImage               = NewSetting("windows-agent-image", "rancher/rancher-agent:master-nanoserver-1803")
 	CACerts                         = NewSetting("cacerts", "")
 	CLIURLDarwin                    = NewSetting("cli-url-darwin", "https://releases.rancher.com/cli/v1.0.0-alpha8/rancher-darwin-amd64-v1.0.0-alpha8.tar.gz")
@@ -32,12 +34,12 @@ var (
 	Namespace                       = NewSetting("namespace", os.Getenv("CATTLE_NAMESPACE"))
 	PeerServices                    = NewSetting("peer-service", os.Getenv("CATTLE_PEER_SERVICE"))
 	RDNSServerBaseURL               = NewSetting("rdns-base-url", "https://api.lb.rancher.cloud/v1")
-	RkeVersion                      = NewSetting("rke-version", RKEVersion)
+	RkeVersion                      = NewSetting("rke-version", "")
 	ServerImage                     = NewSetting("server-image", "rancher/rancher")
 	ServerURL                       = NewSetting("server-url", "")
 	ServerVersion                   = NewSetting("server-version", "dev")
 	SystemDefaultRegistry           = NewSetting("system-default-registry", "")
-	SystemNamespaces                = NewSetting("system-namespaces", "kube-system,kube-public,cattle-system,cattle-alerting,cattle-logging,cattle-pipeline,ingress-nginx")
+	SystemNamespaces                = NewSetting("system-namespaces", "kube-system,kube-public,cattle-system,cattle-alerting,cattle-logging,cattle-pipeline,cattle-prometheus,ingress-nginx,cattle-global-data")
 	TelemetryOpt                    = NewSetting("telemetry-opt", "prompt")
 	TLSMinVersion                   = NewSetting("tls-min-version", "1.2")
 	TLSCiphers                      = NewSetting("tls-ciphers", "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305")
@@ -45,9 +47,33 @@ var (
 	UIIndex                         = NewSetting("ui-index", "https://releases.rancher.com/ui/latest2/index.html")
 	UIPath                          = NewSetting("ui-path", "")
 	UIPL                            = NewSetting("ui-pl", "rancher")
+	UIKubernetesSupportedVersions   = NewSetting("ui-k8s-supported-versions-range", ">= 1.11.0 <=1.13.x")
+	UIKubernetesDefaultVersion      = NewSetting("ui-k8s-default-version-range", "<=1.13.x")
 	WhitelistDomain                 = NewSetting("whitelist-domain", "forums.rancher.com")
-	APIUIVersion                    = NewSetting("api-ui-version", "1.1.6")
+	SystemMonitoringCatalogID       = NewSetting("system-monitoring-catalog-id", "catalog://?catalog=system-library&template=rancher-monitoring&version=0.0.2")
+	SystemExternalDNSCatalogID      = NewSetting("system-externaldns-catalog-id", "catalog://?catalog=system-library&template=rancher-external-dns&version=0.0.1")
+	AuthUserInfoResyncCron          = NewSetting("auth-user-info-resync-cron", "0 0 * * *")
+	AuthUserInfoMaxAgeSeconds       = NewSetting("auth-user-info-max-age-seconds", "3600") // 1 hour
+	APIUIVersion                    = NewSetting("api-ui-version", "1.1.6")                // Please update the CATTLE_API_UI_VERSION in package/Dockerfile when updating the version here.
 )
+
+func init() {
+	if InjectDefaults == "" {
+		return
+	}
+	defaults := map[string]string{}
+	if err := json.Unmarshal([]byte(InjectDefaults), &defaults); err != nil {
+		return
+	}
+	for name, defaultValue := range defaults {
+		value, ok := settings[name]
+		if !ok {
+			continue
+		}
+		value.Default = defaultValue
+		settings[name] = value
+	}
+}
 
 type Provider interface {
 	Get(name string) string
@@ -118,4 +144,8 @@ func getSystemImages() string {
 		return ""
 	}
 	return string(data)
+}
+
+func GetEnvKey(key string) string {
+	return "CATTLE_" + strings.ToUpper(strings.Replace(key, "-", "_", -1))
 }

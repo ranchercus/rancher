@@ -8,17 +8,19 @@ import (
 
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
-
 	"github.com/rancher/norman/types"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/rancher/rancher/pkg/auth/tokens"
+	corev1 "github.com/rancher/types/apis/core/v1"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/management.cattle.io/v3public"
+	v3client "github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/client/management/v3public"
 	"github.com/rancher/types/config"
 	"github.com/rancher/types/user"
+	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -35,6 +37,7 @@ var scopes = []string{UserScope, GroupScope}
 type adProvider struct {
 	ctx         context.Context
 	authConfigs v3.AuthConfigInterface
+	secrets     corev1.SecretInterface
 	userMGR     user.Manager
 	certs       string
 	caPool      *x509.CertPool
@@ -45,6 +48,7 @@ func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.
 	return &adProvider{
 		ctx:         ctx,
 		authConfigs: mgmtCtx.Management.AuthConfigs(""),
+		secrets:     mgmtCtx.Core.Secrets(""),
 		userMGR:     userMGR,
 		tokenMGR:    tokenMGR,
 	}
@@ -125,12 +129,10 @@ func (p *adProvider) GetPrincipal(principalID string, token v3.Token) (v3.Princi
 		return v3.Principal{}, nil
 	}
 
-	parts := strings.SplitN(principalID, ":", 2)
-	if len(parts) != 2 {
-		return v3.Principal{}, errors.Errorf("invalid id %v", principalID)
+	externalID, scope, err := p.getDNAndScopeFromPrincipalID(principalID)
+	if err != nil {
+		return v3.Principal{}, err
 	}
-	scope := parts[0]
-	externalID := strings.TrimPrefix(parts[1], "//")
 
 	principal, err := p.getPrincipal(externalID, scope, config, caPool)
 	if err != nil {
@@ -183,6 +185,15 @@ func (p *adProvider) getActiveDirectoryConfig() (*v3.ActiveDirectoryConfig, *x50
 		p.caPool = pool
 	}
 
+	if storedADConfig.ServiceAccountPassword != "" {
+		value, err := common.ReadFromSecret(p.secrets, storedADConfig.ServiceAccountPassword,
+			strings.ToLower(auth.TypeToField[v3client.ActiveDirectoryConfigType]))
+		if err != nil {
+			return nil, nil, err
+		}
+		storedADConfig.ServiceAccountPassword = value
+	}
+
 	return storedADConfig, p.caPool, nil
 }
 
@@ -193,4 +204,27 @@ func newCAPool(cert string) (*x509.CertPool, error) {
 	}
 	pool.AppendCertsFromPEM([]byte(cert))
 	return pool, nil
+}
+
+func (p *adProvider) CanAccessWithGroupProviders(userPrincipalID string, groupPrincipals []v3.Principal) (bool, error) {
+	config, _, err := p.getActiveDirectoryConfig()
+	if err != nil {
+		logrus.Errorf("Error fetching AD config: %v", err)
+		return false, err
+	}
+	allowed, err := p.userMGR.CheckAccess(config.AccessMode, config.AllowedPrincipalIDs, userPrincipalID, groupPrincipals)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
+}
+
+func (p *adProvider) getDNAndScopeFromPrincipalID(principalID string) (string, string, error) {
+	parts := strings.SplitN(principalID, ":", 2)
+	if len(parts) != 2 {
+		return "", "", errors.Errorf("invalid id %v", principalID)
+	}
+	scope := parts[0]
+	externalID := strings.TrimPrefix(parts[1], "//")
+	return externalID, scope, nil
 }

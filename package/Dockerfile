@@ -5,30 +5,45 @@ RUN apt-get update && apt-get install -y git curl ca-certificates unzip xz-utils
     chown -R rancher /var/lib/rancher /var/lib/cattle /usr/local/bin
 RUN mkdir /root/.kube && \
     ln -s /usr/bin/rancher /usr/bin/kubectl && \
-    ln -s /var/lib/rancher/kube_config_cluster.yml /root/.kube/config && \
+    ln -s /var/lib/rancher/management-state/cred/kubeconfig.yaml /root/.kube/config && \
     ln -s /usr/bin/rancher /usr/bin/reset-password && \
-    ln -s /usr/bin/rancher /usr/bin/ensure-default-admin
+    ln -s /usr/bin/rancher /usr/bin/ensure-default-admin && \
+    rm -f /bin/sh && ln -s /bin/bash /bin/sh
 WORKDIR /var/lib/rancher
 
-ENV CATTLE_HELM_VERSION v2.10.0-rancher5
-ENV CATTLE_MACHINE_VERSION v0.15.0-rancher1-1
-ENV LOGLEVEL_VERSION v0.1
+ARG ARCH=amd64
+ENV CATTLE_HELM_VERSION v2.10.0-rancher10
+ENV CATTLE_MACHINE_VERSION v0.15.0-rancher6-1
+ENV LOGLEVEL_VERSION v0.1.2
 ENV TINI_VERSION v0.18.0
-ENV TELEMETRY_VERSION v0.5.1
+ENV TELEMETRY_VERSION v0.5.3
 
-RUN curl -sLf https://github.com/rancher/machine-package/releases/download/${CATTLE_MACHINE_VERSION}/docker-machine.tar.gz | tar xvzf - -C /usr/bin && \
-    curl -sLf https://github.com/rancher/loglevel/releases/download/${LOGLEVEL_VERSION}/loglevel-amd64-${LOGLEVEL_VERSION}.tar.gz | tar xvzf - -C /usr/bin
 
-RUN curl -sLf https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini > /usr/bin/tini && \
-    curl -sLf https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/helm > /usr/bin/helm && \
-    curl -sLf https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/tiller > /usr/bin/tiller && \
-    curl -sLf https://github.com/rancher/telemetry/releases/download/${TELEMETRY_VERSION}/telemetry > /usr/bin/telemetry && \
+RUN curl -sLf https://github.com/rancher/machine-package/releases/download/${CATTLE_MACHINE_VERSION}/docker-machine-${ARCH}.tar.gz | tar xvzf - -C /usr/bin && \
+    curl -sLf https://github.com/rancher/loglevel/releases/download/${LOGLEVEL_VERSION}/loglevel-${ARCH}-${LOGLEVEL_VERSION}.tar.gz | tar xvzf - -C /usr/bin
+
+ENV TINI_URL_amd64=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini \
+    TINI_URL_arm64=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-arm64 \
+    TINI_URL=TINI_URL_${ARCH}
+
+ENV HELM_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/helm \
+    HELM_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/helm-arm64 \
+    HELM_URL=HELM_URL_${ARCH} \
+    TILLER_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/tiller \
+    TILLER_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/tiller-arm64 \
+    TILLER_URL=TILLER_URL_${ARCH}
+
+RUN curl -sLf ${!TINI_URL} > /usr/bin/tini && \
+    curl -sLf ${!HELM_URL} > /usr/bin/helm && \
+    curl -sLf ${!TILLER_URL} > /usr/bin/tiller && \
+    curl -sLf https://github.com/rancher/telemetry/releases/download/${TELEMETRY_VERSION}/telemetry-${ARCH} > /usr/bin/telemetry && \
     chmod +x /usr/bin/helm /usr/bin/tini /usr/bin/telemetry /usr/bin/tiller
 
 ENV CATTLE_UI_PATH /usr/share/rancher/ui
-ENV CATTLE_UI_VERSION 2.1.21
-ENV CATTLE_CLI_VERSION v2.0.6
+ENV CATTLE_UI_VERSION 2.2.19
+ENV CATTLE_CLI_VERSION v2.2.0
 
+# Please update the api-ui-version in pkg/settings/settings.go when updating the version here.
 ENV CATTLE_API_UI_VERSION 1.1.6
 
 RUN mkdir -p /var/log/auditlog
@@ -59,6 +74,7 @@ RUN chmod +x /usr/bin/entrypoint.sh
 ENV CATTLE_AGENT_IMAGE rancher/rancher-agent:${VERSION}
 ENV CATTLE_WINDOWS_AGENT_IMAGE rancher/rancher-agent:${VERSION}-nanoserver-1803
 ENV CATTLE_SERVER_IMAGE rancher/rancher
+ENV ETCD_UNSUPPORTED_ARCH=${ARCH}
 
 ENV SSL_CERT_DIR /etc/rancher/ssl
 VOLUME /var/lib/rancher

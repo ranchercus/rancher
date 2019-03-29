@@ -264,7 +264,7 @@ func CheckFieldCriteria(fieldName string, field types.Field, value interface{}) 
 		}
 	}
 
-	if hasStrVal {
+	if hasStrVal || value == "" {
 		if field.MinLength != nil && int64(len(strVal)) < *field.MinLength {
 			return httperror.NewFieldAPIError(httperror.MinLengthExceeded, fieldName, "")
 		}
@@ -327,6 +327,8 @@ func ConvertSimple(fieldType string, value interface{}, op Operation) (interface
 		return convert.ToString(value), nil
 	case "int":
 		return convert.ToNumber(value)
+	case "float":
+		return convert.ToFloat(value)
 	case "password":
 		return convert.ToString(value), nil
 	case "string":

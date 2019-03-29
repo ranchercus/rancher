@@ -197,4 +197,66 @@ spec:
           secretName: cattle-credentials-{{.TokenKey}}
   updateStrategy:
     type: RollingUpdate
+
+{{- if .AuthImage}}
+
+---
+
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+    name: kube-api-auth
+    namespace: cattle-system
+spec:
+  selector:
+    matchLabels:
+      app: kube-api-auth
+  template:
+    metadata:
+      labels:
+        app: kube-api-auth
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                - key: beta.kubernetes.io/os
+                  operator: NotIn
+                  values:
+                    - windows
+      hostNetwork: true
+      serviceAccountName: cattle
+      tolerations:
+      - effect: NoExecute
+        key: "node-role.kubernetes.io/etcd"
+        value: "true"
+      - effect: NoSchedule
+        key: "node-role.kubernetes.io/controlplane"
+        value: "true"
+      containers:
+      - name: kube-api-auth
+        image: {{.AuthImage}}
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: k8s-ssl
+          mountPath: /etc/kubernetes
+        securityContext:
+          privileged: true
+      volumes:
+      - name: k8s-ssl
+        hostPath:
+          path: /etc/kubernetes
+          type: DirectoryOrCreate
+  updateStrategy:
+    type: RollingUpdate
+{{- end }}
+`
+
+var AuthDaemonSet = `
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+    name: kube-api-auth
+    namespace: cattle-system
 `

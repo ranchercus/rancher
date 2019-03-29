@@ -24,6 +24,7 @@ import (
 
 const (
 	creatorIDAnnotation = "field.cattle.io/creatorId"
+	metricsAnnotation   = "field.cattle.io/workloadMetrics"
 )
 
 type Controller struct {
@@ -37,7 +38,7 @@ func Register(ctx context.Context, workload *config.UserOnlyContext) {
 		serviceLister: workload.Core.Services("").Controller().Lister(),
 		services:      workload.Core.Services(""),
 	}
-	c.workloadController = NewWorkloadController(workload, c.CreateService)
+	c.workloadController = NewWorkloadController(ctx, workload, c.CreateService)
 }
 
 func getName() string {
@@ -144,7 +145,7 @@ func (c *Controller) CreateServiceForWorkload(workload *Workload) error {
 				return nil
 			}
 
-			if arePortsEqual(toCreate.ServicePorts, existing.Spec.Ports) {
+			if ArePortsEqual(toCreate.ServicePorts, existing.Spec.Ports) {
 				continue
 			}
 
@@ -241,7 +242,7 @@ func (c *Controller) createService(toCreate Service, workload *Workload) error {
 	}
 
 	serviceAnnotations := map[string]string{}
-	workloadAnnotationValue, err := workloadAnnotationToString(workload.Key)
+	workloadAnnotationValue, err := IDAnnotationToString(workload.Key)
 	if err != nil {
 		return err
 	}
@@ -276,7 +277,7 @@ func (c *Controller) createService(toCreate Service, workload *Workload) error {
 	return nil
 }
 
-func arePortsEqual(one []corev1.ServicePort, two []corev1.ServicePort) bool {
+func ArePortsEqual(one []corev1.ServicePort, two []corev1.ServicePort) bool {
 	if len(one) != len(two) {
 		return false
 	}
@@ -298,7 +299,7 @@ func arePortsEqual(one []corev1.ServicePort, two []corev1.ServicePort) bool {
 	return true
 }
 
-func workloadAnnotationToString(workloadID string) (string, error) {
+func IDAnnotationToString(workloadID string) (string, error) {
 	ws := []string{workloadID}
 	b, err := json.Marshal(ws)
 	if err != nil {

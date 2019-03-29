@@ -3,17 +3,23 @@ package user
 import (
 	"context"
 
+	monitoringv1 "github.com/coreos/prometheus-operator/pkg/client/monitoring/v1"
+	"github.com/rancher/norman/store/crd"
+	"github.com/rancher/norman/types"
 	"github.com/rancher/rancher/pkg/controllers/management/compose/common"
 	"github.com/rancher/rancher/pkg/controllers/user/alert"
 	"github.com/rancher/rancher/pkg/controllers/user/approuter"
+	"github.com/rancher/rancher/pkg/controllers/user/clusterauthtoken"
 	"github.com/rancher/rancher/pkg/controllers/user/dnsrecord"
 	"github.com/rancher/rancher/pkg/controllers/user/endpoints"
 	"github.com/rancher/rancher/pkg/controllers/user/externalservice"
+	"github.com/rancher/rancher/pkg/controllers/user/globaldns"
 	"github.com/rancher/rancher/pkg/controllers/user/healthsyncer"
 	"github.com/rancher/rancher/pkg/controllers/user/helm"
 	"github.com/rancher/rancher/pkg/controllers/user/ingress"
 	"github.com/rancher/rancher/pkg/controllers/user/ingresshostgen"
 	"github.com/rancher/rancher/pkg/controllers/user/logging"
+	"github.com/rancher/rancher/pkg/controllers/user/monitoring"
 	"github.com/rancher/rancher/pkg/controllers/user/networkpolicy"
 	"github.com/rancher/rancher/pkg/controllers/user/noderemove"
 	"github.com/rancher/rancher/pkg/controllers/user/nodesyncer"
@@ -23,53 +29,113 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/user/rbac/podsecuritypolicy"
 	"github.com/rancher/rancher/pkg/controllers/user/resourcequota"
 	"github.com/rancher/rancher/pkg/controllers/user/secret"
+	"github.com/rancher/rancher/pkg/controllers/user/servicemonitor"
 	"github.com/rancher/rancher/pkg/controllers/user/systemimage"
 	"github.com/rancher/rancher/pkg/controllers/user/targetworkloadservice"
 	"github.com/rancher/rancher/pkg/controllers/user/workload"
+	pkgmonitoring "github.com/rancher/rancher/pkg/monitoring"
+	managementv3 "github.com/rancher/types/apis/management.cattle.io/v3"
+	projectclient "github.com/rancher/types/client/project/v3"
 	"github.com/rancher/types/config"
+	"github.com/rancher/types/factory"
 
 	// init upgrade implement
-	_ "github.com/rancher/rancher/pkg/controllers/user/alert/upgrade"
-	_ "github.com/rancher/rancher/pkg/controllers/user/logging/upgrade"
+	_ "github.com/rancher/rancher/pkg/controllers/user/alert/deployer"
+	_ "github.com/rancher/rancher/pkg/controllers/user/logging/deployer"
 	_ "github.com/rancher/rancher/pkg/controllers/user/pipeline/upgrade"
 )
 
-func Register(ctx context.Context, cluster *config.UserContext, kubeConfigGetter common.KubeConfigGetter, clusterManager healthsyncer.ClusterControllerLifecycle) error {
-	alert.Register(ctx, cluster)
-	rbac.Register(cluster)
+func Register(ctx context.Context, cluster *config.UserContext, clusterRec *managementv3.Cluster, kubeConfigGetter common.KubeConfigGetter, clusterManager healthsyncer.ClusterControllerLifecycle) error {
+	rbac.Register(ctx, cluster)
 	healthsyncer.Register(ctx, cluster, clusterManager)
-	helm.Register(cluster, kubeConfigGetter)
+	helm.Register(ctx, cluster, kubeConfigGetter)
 	logging.Register(ctx, cluster)
-	networkpolicy.Register(cluster)
-	noderemove.Register(cluster)
+	networkpolicy.Register(ctx, cluster)
+	noderemove.Register(ctx, cluster)
 	nodesyncer.Register(ctx, cluster, kubeConfigGetter)
-	nslabels.Register(cluster)
 	pipeline.Register(ctx, cluster)
-	podsecuritypolicy.RegisterCluster(cluster)
-	podsecuritypolicy.RegisterBindings(cluster)
-	podsecuritypolicy.RegisterNamespace(cluster)
-	podsecuritypolicy.RegisterServiceAccount(cluster)
-	podsecuritypolicy.RegisterTemplate(cluster)
-	secret.Register(cluster)
+	podsecuritypolicy.RegisterCluster(ctx, cluster)
+	podsecuritypolicy.RegisterBindings(ctx, cluster)
+	podsecuritypolicy.RegisterNamespace(ctx, cluster)
+	podsecuritypolicy.RegisterServiceAccount(ctx, cluster)
+	podsecuritypolicy.RegisterTemplate(ctx, cluster)
+	secret.Register(ctx, cluster)
 	systemimage.Register(ctx, cluster)
 	endpoints.Register(ctx, cluster)
 	approuter.Register(ctx, cluster)
 	resourcequota.Register(ctx, cluster)
+	globaldns.Register(ctx, cluster)
+	alert.Register(ctx, cluster)
+	monitoring.Register(ctx, cluster)
 
-	userOnlyContext := cluster.UserOnlyContext()
-	dnsrecord.Register(ctx, userOnlyContext)
-	externalservice.Register(ctx, userOnlyContext)
-	ingress.Register(ctx, userOnlyContext, cluster)
-	ingresshostgen.Register(userOnlyContext)
-	targetworkloadservice.Register(ctx, userOnlyContext)
-	workload.Register(ctx, userOnlyContext)
+	if clusterRec.Spec.LocalClusterAuthEndpoint.Enabled {
+		err := clusterauthtoken.CRDSetup(ctx, cluster.UserOnlyContext())
+		if err != nil {
+			return err
+		}
+		clusterauthtoken.Register(ctx, cluster)
+	}
+
+	if clusterRec.Spec.Internal {
+		err := RegisterUserOnly(ctx, cluster.UserOnlyContext())
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
 func RegisterFollower(ctx context.Context, cluster *config.UserContext, kubeConfigGetter common.KubeConfigGetter, clusterManager healthsyncer.ClusterControllerLifecycle) error {
 	cluster.Core.Namespaces("").Controller()
+	cluster.Core.Services("").Controller()
 	cluster.RBAC.ClusterRoleBindings("").Controller()
 	cluster.RBAC.RoleBindings("").Controller()
 	return nil
+}
+
+func RegisterUserOnly(ctx context.Context, cluster *config.UserOnlyContext) error {
+	if err := createUserClusterCRDs(ctx, cluster); err != nil {
+		return err
+	}
+
+	dnsrecord.Register(ctx, cluster)
+	externalservice.Register(ctx, cluster)
+	ingress.Register(ctx, cluster)
+	ingresshostgen.Register(ctx, cluster)
+	nslabels.Register(ctx, cluster)
+	targetworkloadservice.Register(ctx, cluster)
+	workload.Register(ctx, cluster)
+	servicemonitor.Register(ctx, cluster)
+	monitoring.RegisterAgent(ctx, cluster)
+
+	return nil
+}
+
+func createUserClusterCRDs(ctx context.Context, c *config.UserOnlyContext) error {
+	overrided := struct {
+		types.Namespaced
+	}{}
+
+	schemas := factory.Schemas(&pkgmonitoring.APIVersion).
+		MustImport(&pkgmonitoring.APIVersion, monitoringv1.Prometheus{}, overrided).
+		MustImport(&pkgmonitoring.APIVersion, monitoringv1.PrometheusRule{}, overrided).
+		MustImport(&pkgmonitoring.APIVersion, monitoringv1.ServiceMonitor{}, overrided).
+		MustImport(&pkgmonitoring.APIVersion, monitoringv1.Alertmanager{}, overrided)
+
+	f, err := crd.NewFactoryFromClient(c.RESTConfig)
+	if err != nil {
+		return err
+	}
+
+	_, err = f.CreateCRDs(ctx, config.UserStorageContext,
+		schemas.Schema(&pkgmonitoring.APIVersion, projectclient.PrometheusType),
+		schemas.Schema(&pkgmonitoring.APIVersion, projectclient.PrometheusRuleType),
+		schemas.Schema(&pkgmonitoring.APIVersion, projectclient.AlertmanagerType),
+		schemas.Schema(&pkgmonitoring.APIVersion, projectclient.ServiceMonitorType),
+	)
+
+	f.BatchWait()
+
+	return err
 }

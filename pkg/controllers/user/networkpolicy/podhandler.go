@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	knetworkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -27,29 +28,29 @@ type podHandler struct {
 	clusterNamespace string
 }
 
-func (ph *podHandler) Sync(key string, pod *corev1.Pod) error {
+func (ph *podHandler) Sync(key string, pod *corev1.Pod) (runtime.Object, error) {
 	if pod == nil || pod.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 	disabled, err := isNetworkPolicyDisabled(ph.clusterNamespace, ph.clusterLister)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if disabled {
-		return nil
+		return nil, nil
 	}
 	moved, err := isNamespaceMoved(pod.Namespace, ph.npmgr.nsLister)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if moved {
-		return nil
+		return nil, nil
 	}
 	logrus.Debugf("podHandler: Sync: %+v", *pod)
 	if err := ph.addLabelIfHostPortsPresent(pod); err != nil {
-		return err
+		return nil, err
 	}
-	return ph.npmgr.hostPortsUpdateHandler(pod, ph.clusterNamespace)
+	return nil, ph.npmgr.hostPortsUpdateHandler(pod, ph.clusterNamespace)
 }
 
 // k8s native network policy can select pods only using labels,

@@ -1,23 +1,37 @@
 package pipelineexecution
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"text/template"
+	"time"
+
 	"github.com/pkg/errors"
+	"github.com/rancher/norman/types/slice"
+	"github.com/rancher/rancher/pkg/notifiers"
 	"github.com/rancher/rancher/pkg/pipeline/engine"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
+	"github.com/rancher/rancher/pkg/settings"
+	"github.com/rancher/rancher/pkg/systemaccount"
 	"github.com/rancher/types/apis/apps/v1beta2"
 	"github.com/rancher/types/apis/core/v1"
+	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	networkv1 "github.com/rancher/types/apis/networking.k8s.io/v1"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	rbacv1 "github.com/rancher/types/apis/rbac.authorization.k8s.io/v1"
 	"github.com/rancher/types/config"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"strconv"
-	"strings"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 //This controller is responsible for
@@ -32,25 +46,45 @@ const (
 	roleAdmin        = "admin"
 )
 
+type notifierRecipient struct {
+	Notifier  *mv3.Notifier
+	Recipient string
+}
+
+type executionSummary struct {
+	Run                  int
+	RepoName             string
+	State                string
+	CommitMessage        string
+	Author               string
+	GitRefURL            string
+	PipelineExecutionURL string
+	Event                string
+	Duration             string
+	Message              string
+}
+
 type Lifecycle struct {
-	namespaceLister   v1.NamespaceLister
-	namespaces        v1.NamespaceInterface
-	secrets           v1.SecretInterface
-	serviceLister     v1.ServiceLister
-	managementSecrets v1.SecretInterface
-	services          v1.ServiceInterface
-	serviceAccounts   v1.ServiceAccountInterface
-	configMapLister   v1.ConfigMapLister
-	configMaps        v1.ConfigMapInterface
-	podLister         v1.PodLister
-	pods              v1.PodInterface
-	networkPolicies   networkv1.NetworkPolicyInterface
+	systemAccountManager *systemaccount.Manager
+	namespaceLister      v1.NamespaceLister
+	namespaces           v1.NamespaceInterface
+	secrets              v1.SecretInterface
+	serviceLister        v1.ServiceLister
+	managementSecrets    v1.SecretInterface
+	services             v1.ServiceInterface
+	serviceAccounts      v1.ServiceAccountInterface
+	configMapLister      v1.ConfigMapLister
+	configMaps           v1.ConfigMapInterface
+	podLister            v1.PodLister
+	pods                 v1.PodInterface
+	networkPolicies      networkv1.NetworkPolicyInterface
 
 	clusterRoleBindings rbacv1.ClusterRoleBindingInterface
 	roleBindings        rbacv1.RoleBindingInterface
 	deployments         v1beta2.DeploymentInterface
 	daemonsets          v1beta2.DaemonSetInterface
 
+	notifierLister             mv3.NotifierLister
 	pipelineLister             v3.PipelineLister
 	pipelines                  v3.PipelineInterface
 	pipelineExecutionLister    v3.PipelineExecutionLister
@@ -88,26 +122,28 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 	pipelineExecutionLister := pipelineExecutions.Controller().Lister()
 	pipelineSettingLister := cluster.Management.Project.PipelineSettings("").Controller().Lister()
 	sourceCodeCredentialLister := cluster.Management.Project.SourceCodeCredentials("").Controller().Lister()
+	notifierLister := cluster.Management.Management.Notifiers("").Controller().Lister()
 	projectLister := cluster.Management.Management.Projects("").Controller().Lister()
 
-	pipelineEngine := engine.New(cluster)
+	pipelineEngine := engine.New(cluster, true)
 	pipelineExecutionLifecycle := &Lifecycle{
-		namespaces:          namespaces,
-		namespaceLister:     namespaceLister,
-		secrets:             secrets,
-		managementSecrets:   managementSecrets,
-		services:            services,
-		serviceLister:       serviceLister,
-		serviceAccounts:     serviceAccounts,
-		networkPolicies:     networkPolicies,
-		clusterRoleBindings: clusterRoleBindings,
-		roleBindings:        roleBindings,
-		deployments:         deployments,
-		daemonsets:          daemonsets,
-		pods:                pods,
-		podLister:           podLister,
-		configMaps:          configMaps,
-		configMapLister:     configMapLister,
+		systemAccountManager: systemaccount.NewManager(cluster.Management),
+		namespaces:           namespaces,
+		namespaceLister:      namespaceLister,
+		secrets:              secrets,
+		managementSecrets:    managementSecrets,
+		services:             services,
+		serviceLister:        serviceLister,
+		serviceAccounts:      serviceAccounts,
+		networkPolicies:      networkPolicies,
+		clusterRoleBindings:  clusterRoleBindings,
+		roleBindings:         roleBindings,
+		deployments:          deployments,
+		daemonsets:           daemonsets,
+		pods:                 pods,
+		podLister:            podLister,
+		configMaps:           configMaps,
+		configMapLister:      configMapLister,
 
 		pipelineLister:             pipelineLister,
 		pipelines:                  pipelines,
@@ -116,6 +152,7 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 		pipelineSettingLister:      pipelineSettingLister,
 		pipelineEngine:             pipelineEngine,
 		sourceCodeCredentialLister: sourceCodeCredentialLister,
+		notifierLister:             notifierLister,
 	}
 	stateSyncer := &ExecutionStateSyncer{
 		clusterName: clusterName,
@@ -140,22 +177,22 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 		pipelineSettingLister:   pipelineSettingLister,
 	}
 
-	pipelineExecutions.AddClusterScopedLifecycle(pipelineExecutionLifecycle.GetName(), cluster.ClusterName, pipelineExecutionLifecycle)
+	pipelineExecutions.AddClusterScopedLifecycle(ctx, pipelineExecutionLifecycle.GetName(), cluster.ClusterName, pipelineExecutionLifecycle)
 
 	go stateSyncer.sync(ctx, syncStateInterval)
 	go registryCertSyncer.sync(ctx, checkCertRotateInterval)
 
 }
 
-func (l *Lifecycle) Create(obj *v3.PipelineExecution) (*v3.PipelineExecution, error) {
+func (l *Lifecycle) Create(obj *v3.PipelineExecution) (runtime.Object, error) {
 	return l.Sync(obj)
 }
 
-func (l *Lifecycle) Updated(obj *v3.PipelineExecution) (*v3.PipelineExecution, error) {
+func (l *Lifecycle) Updated(obj *v3.PipelineExecution) (runtime.Object, error) {
 	return l.Sync(obj)
 }
 
-func (l *Lifecycle) Sync(obj *v3.PipelineExecution) (*v3.PipelineExecution, error) {
+func (l *Lifecycle) Sync(obj *v3.PipelineExecution) (runtime.Object, error) {
 	if obj == nil || obj.DeletionTimestamp != nil {
 		return obj, nil
 	}
@@ -169,14 +206,7 @@ func (l *Lifecycle) Sync(obj *v3.PipelineExecution) (*v3.PipelineExecution, erro
 
 	//doIfFinish
 	if obj.Labels != nil && obj.Labels[utils.PipelineFinishLabel] == "true" {
-		if err := l.doCleanup(obj); err != nil {
-			return obj, err
-		}
-		//start a queueing execution if there is any
-		if err := l.startQueueingExecution(obj); err != nil {
-			return obj, err
-		}
-		return obj, nil
+		return l.doFinish(obj)
 	}
 
 	//doIfRunning
@@ -198,6 +228,8 @@ func (l *Lifecycle) Sync(obj *v3.PipelineExecution) (*v3.PipelineExecution, erro
 		}
 
 		return obj, nil
+	} else if obj.Status.ExecutionState == utils.StateQueueing {
+		obj.Status.ExecutionState = utils.StateWaiting
 	}
 
 	//doIfOnCreation
@@ -207,7 +239,7 @@ func (l *Lifecycle) Sync(obj *v3.PipelineExecution) (*v3.PipelineExecution, erro
 	v3.PipelineExecutionConditionInitialized.CreateUnknownIfNotExists(obj)
 	obj.Labels[utils.PipelineFinishLabel] = "false"
 
-	if err := l.deploy(obj); err != nil {
+	if err := l.deploy(obj.Spec.ProjectName); err != nil {
 		obj.Labels[utils.PipelineFinishLabel] = "true"
 		obj.Status.ExecutionState = utils.StateFailed
 		v3.PipelineExecutionConditionInitialized.False(obj)
@@ -215,6 +247,31 @@ func (l *Lifecycle) Sync(obj *v3.PipelineExecution) (*v3.PipelineExecution, erro
 	}
 
 	if err := l.markLocalRegistryPort(obj); err != nil {
+		return obj, err
+	}
+
+	return obj, nil
+}
+
+func (l *Lifecycle) doFinish(obj *v3.PipelineExecution) (*v3.PipelineExecution, error) {
+	if err := l.doCleanup(obj); err != nil {
+		return obj, err
+	}
+
+	shouldNotify, err := l.shouldNotify(obj)
+	if err != nil {
+		return obj, err
+	}
+	if shouldNotify {
+		newObj, err := v3.PipelineExecutionConditionNotified.Once(obj, func() (runtime.Object, error) {
+			return l.doNotify(obj)
+		})
+		if err != nil {
+			return newObj.(*v3.PipelineExecution), err
+		}
+	}
+	//start a queueing execution if there is any
+	if err := l.startQueueingExecution(obj); err != nil {
 		return obj, err
 	}
 
@@ -361,7 +418,7 @@ func (l *Lifecycle) doCleanup(obj *v3.PipelineExecution) error {
 	if err := l.pipelineEngine.StopExecution(obj); err != nil {
 		return err
 	}
-	ns := utils.GetPipelineCommonName(obj)
+	ns := utils.GetPipelineCommonName(obj.Spec.ProjectName)
 
 	labelSet := labels.Set{
 		utils.LabelKeyApp:       utils.JenkinsName,
@@ -379,8 +436,88 @@ func (l *Lifecycle) doCleanup(obj *v3.PipelineExecution) error {
 	return nil
 }
 
-func (l *Lifecycle) Remove(obj *v3.PipelineExecution) (*v3.PipelineExecution, error) {
-	return obj, nil
+func (l *Lifecycle) Remove(obj *v3.PipelineExecution) (runtime.Object, error) {
+	if utils.IsFinishState(obj.Status.ExecutionState) {
+		return obj, nil
+	}
+	return l.doFinish(obj)
+}
+
+func (l *Lifecycle) shouldNotify(obj *v3.PipelineExecution) (bool, error) {
+	if obj.Spec.PipelineConfig.Notification != nil {
+		if len(obj.Spec.PipelineConfig.Notification.Recipients) <= 0 {
+			return false, nil
+		}
+		condition := obj.Spec.PipelineConfig.Notification.Condition
+		if slice.ContainsString(condition, obj.Status.ExecutionState) {
+			return true, nil
+		} else if slice.ContainsString(condition, utils.ConditionChanged) {
+			_, pipelineName := ref.Parse(obj.Spec.PipelineName)
+			lastExecutionName := fmt.Sprintf("%s-%d", pipelineName, obj.Spec.Run-1)
+			lastExecution, err := l.pipelineExecutionLister.Get(obj.Namespace, lastExecutionName)
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			} else if err != nil {
+				return false, err
+			}
+			if utils.IsFinishState(lastExecution.Status.ExecutionState) &&
+				lastExecution.Status.ExecutionState != obj.Status.ExecutionState {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func (l *Lifecycle) doNotify(obj *v3.PipelineExecution) (runtime.Object, error) {
+	toSendRecipients, err := l.getToSendRecipients(obj)
+	if err != nil {
+		return obj, err
+	}
+	message, err := defaultNotificationMessage(obj)
+	if err != nil {
+		return obj, err
+	}
+	if obj.Spec.PipelineConfig.Notification.Message != "" {
+		message = obj.Spec.PipelineConfig.Notification.Message
+	}
+	var g errgroup.Group
+	for _, toSendRecipient := range toSendRecipients {
+		notifierMessage := &notifiers.Message{
+			Content: message,
+		}
+		if toSendRecipient.Notifier.Spec.SMTPConfig != nil {
+			repoName := getRepoNameFromURL(obj.Spec.RepositoryURL)
+			notifierMessage.Title = fmt.Sprintf("Notification From Rancher: Pipeline #%d build for %s repo %s", obj.Spec.Run, repoName, obj.Status.ExecutionState)
+			notifierMessage.Content = strings.Replace(message, "\n", "<br>\n", -1)
+		}
+		g.Go(func() error {
+			return notifiers.SendMessage(toSendRecipient.Notifier, toSendRecipient.Recipient, notifierMessage)
+		})
+	}
+	return obj, g.Wait()
+}
+
+func (l *Lifecycle) getToSendRecipients(obj *v3.PipelineExecution) ([]notifierRecipient, error) {
+	clusterName, _ := ref.Parse(obj.Spec.ProjectName)
+	existingNotifiers, err := l.notifierLister.List(clusterName, labels.NewSelector())
+	if err != nil {
+		return nil, err
+	}
+	var toSendRecipients []notifierRecipient
+	for _, recipient := range obj.Spec.PipelineConfig.Notification.Recipients {
+		notifierName := recipient.Notifier
+		for _, notifier := range existingNotifiers {
+			_, name := ref.Parse(notifierName)
+			if name == notifier.Spec.DisplayName || name == notifier.Name {
+				toSendRecipients = append(toSendRecipients, struct {
+					Notifier  *mv3.Notifier
+					Recipient string
+				}{Notifier: notifier, Recipient: recipient.Recipient})
+			}
+		}
+	}
+	return toSendRecipients, nil
 }
 
 func (l *Lifecycle) GetName() string {
@@ -388,9 +525,9 @@ func (l *Lifecycle) GetName() string {
 }
 
 //reconcileRb grant access to pipeline service account inside project namespaces
-func (l *Lifecycle) reconcileRb(obj *v3.PipelineExecution) error {
-	commonName := utils.GetPipelineCommonName(obj)
-	_, projectID := ref.Parse(obj.Spec.ProjectName)
+func (l *Lifecycle) reconcileRb(projectName string) error {
+	commonName := utils.GetPipelineCommonName(projectName)
+	_, projectID := ref.Parse(projectName)
 
 	namespaces, err := l.namespaceLister.List("", labels.NewSelector())
 	if err != nil {
@@ -423,4 +560,68 @@ func (l *Lifecycle) reconcileRb(obj *v3.PipelineExecution) error {
 	}
 
 	return nil
+}
+
+func defaultNotificationMessage(execution *v3.PipelineExecution) (string, error) {
+	notificationTemplate := `
+Pipeline execution #{{.Run}} for {{.RepoName}} repo ended in '{{.State}}' state
+Commit message: {{.CommitMessage}}
+Author: {{.Author}}
+Git Ref URL: {{.GitRefURL}}
+Pipeline execution URL: {{.PipelineExecutionURL}}
+Event: {{.Event}}
+Duration: {{.Duration}}
+Message: {{.Message}}
+`
+
+	repoName := getRepoNameFromURL(execution.Spec.RepositoryURL)
+	duration := "<Unknown>"
+	endTime, err1 := time.Parse(time.RFC3339, execution.Status.Ended)
+	startTime, err2 := time.Parse(time.RFC3339, execution.Status.Started)
+	if err1 == nil && err2 == nil {
+		duration = endTime.Sub(startTime).String()
+	} else {
+		logrus.Warnf("cannot parse duration of pipeline execution %s: %v,%v", execution.Name, err1, err2)
+	}
+	buildLink := fmt.Sprintf("%s/p/%s/pipeline/pipelines/%s/run/%d",
+		settings.ServerURL.Get(),
+		execution.Spec.ProjectName,
+		execution.Spec.PipelineName,
+		execution.Spec.Run,
+	)
+	builtMessage := "Success"
+	if v3.PipelineExecutionConditionBuilt.IsFalse(execution) {
+		builtMessage = v3.PipelineExecutionConditionBuilt.GetMessage(execution)
+	}
+	buf := &bytes.Buffer{}
+	data := executionSummary{
+		Run:                  execution.Spec.Run,
+		RepoName:             repoName,
+		State:                execution.Status.ExecutionState,
+		CommitMessage:        execution.Spec.Message,
+		Author:               execution.Spec.Author,
+		GitRefURL:            execution.Spec.HTMLLink,
+		PipelineExecutionURL: buildLink,
+		Event:                execution.Spec.Event,
+		Duration:             duration,
+		Message:              builtMessage,
+	}
+	t, err := template.New("notification").Parse(notificationTemplate)
+	if err != nil {
+		return "", err
+	}
+	if err := t.Execute(buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func getRepoNameFromURL(repoURL string) string {
+	reg := regexp.MustCompile(".*/([^/]*?)/([^/]*?).git")
+	match := reg.FindStringSubmatch(repoURL)
+	if len(match) != 3 {
+		logrus.Warnf("failed to parse git repo url: %s", repoURL)
+		return fmt.Sprintf("<%s>", repoURL)
+	}
+	return fmt.Sprintf("%s/%s", match[1], match[2])
 }

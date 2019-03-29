@@ -3,6 +3,9 @@ package nodesyncer
 import (
 	"fmt"
 	"reflect"
+	"sort"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"context"
 
@@ -94,23 +97,23 @@ func Register(ctx context.Context, cluster *config.UserContext, kubeConfigGetter
 		nodesToContext:       map[string]context.CancelFunc{},
 	}
 
-	cluster.Core.Nodes("").Controller().AddHandler("nodesSyncer", n.sync)
-	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler("machinesSyncer", m.sync)
-	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler("machinesLabelSyncer", m.syncLabels)
-	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler("cordonFieldsSyncer", m.syncCordonFields)
-	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler("drainNodeSyncer", d.drainNode)
+	cluster.Core.Nodes("").Controller().AddHandler(ctx, "nodesSyncer", n.sync)
+	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler(ctx, "machinesSyncer", m.sync)
+	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler(ctx, "machinesLabelSyncer", m.syncLabels)
+	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler(ctx, "cordonFieldsSyncer", m.syncCordonFields)
+	cluster.Management.Management.Nodes(cluster.ClusterName).Controller().AddHandler(ctx, "drainNodeSyncer", d.drainNode)
 }
 
-func (n *NodeSyncer) sync(key string, node *corev1.Node) error {
+func (n *NodeSyncer) sync(key string, node *corev1.Node) (runtime.Object, error) {
 	needUpdate, err := n.needUpdate(key, node)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if needUpdate {
 		n.machines.Controller().Enqueue(n.clusterNamespace, AllNodeKey)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func (n *NodeSyncer) needUpdate(key string, node *corev1.Node) (bool, error) {
@@ -140,25 +143,25 @@ func (n *NodeSyncer) needUpdate(key string, node *corev1.Node) (bool, error) {
 	return true, nil
 }
 
-func (m *NodesSyncer) sync(key string, machine *v3.Node) error {
+func (m *NodesSyncer) sync(key string, machine *v3.Node) (runtime.Object, error) {
 	if key == fmt.Sprintf("%s/%s", m.clusterNamespace, AllNodeKey) {
-		return m.reconcileAll()
+		return nil, m.reconcileAll()
 	}
-	return nil
+	return nil, nil
 }
 
-func (m *NodesSyncer) syncLabels(key string, obj *v3.Node) error {
+func (m *NodesSyncer) syncLabels(key string, obj *v3.Node) (runtime.Object, error) {
 	if obj == nil {
-		return nil
+		return nil, nil
 	}
 
 	if obj.Spec.DesiredNodeAnnotations == nil && obj.Spec.DesiredNodeLabels == nil {
-		return nil
+		return nil, nil
 	}
 
 	node, err := nodehelper.GetNodeForMachine(obj, m.nodeLister)
 	if err != nil || node == nil {
-		return err
+		return nil, err
 	}
 
 	updateLabels := false
@@ -194,7 +197,7 @@ func (m *NodesSyncer) syncLabels(key string, obj *v3.Node) error {
 		}
 		logrus.Infof("Updating node %v with labels %v and annotations %v", toUpdate.Name, toUpdate.Labels, toUpdate.Annotations)
 		if _, err := m.nodeClient.Update(toUpdate); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -205,12 +208,10 @@ func (m *NodesSyncer) syncLabels(key string, obj *v3.Node) error {
 		machine.Spec.DesiredNodeLabels = nil
 		machine.Spec.CurrentNodeAnnotations = nil
 		machine.Spec.CurrentNodeLabels = nil
-		if _, err := m.machines.Update(machine); err != nil {
-			return err
-		}
+		return m.machines.Update(machine)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func (m *NodesSyncer) reconcileAll() error {
@@ -225,6 +226,9 @@ func (m *NodesSyncer) reconcileAll() error {
 	}
 
 	machines, err := m.machineLister.List(m.clusterNamespace, labels.NewSelector())
+	if err != nil {
+		return err
+	}
 	machineMap := make(map[string]*v3.Node)
 	toDelete := make(map[string]*v3.Node)
 	for _, machine := range machines {
@@ -336,8 +340,8 @@ func (m *NodesSyncer) createNode(node *corev1.Node, pods map[string][]*corev1.Po
 
 	if machine.Annotations == nil {
 		machine.Annotations = make(map[string]string)
-		machine.Annotations[annotationName] = "true"
 	}
+	machine.Annotations[annotationName] = "true"
 
 	_, err = m.machines.Create(machine)
 	if err != nil {
@@ -387,6 +391,9 @@ func resetConditions(machine *v3.Node) *v3.Node {
 		toUpdateCond.LastTransitionTime = metav1.Time{}
 		toUpdateConds = append(toUpdateConds, *toUpdateCond)
 	}
+	sort.Slice(toUpdateConds, func(i, j int) bool {
+		return toUpdateConds[i].Type < toUpdateConds[j].Type
+	})
 	updated.Status.InternalNodeStatus.Conditions = toUpdateConds
 	return updated
 }
@@ -468,12 +475,15 @@ func statusEqualTest(proposed, existing corev1.NodeStatus) bool {
 
 	// Compare Node's Kubernetes versions
 	if proposed.NodeInfo.KubeletVersion != existing.NodeInfo.KubeletVersion ||
-		proposed.NodeInfo.KubeProxyVersion != existing.NodeInfo.KubeProxyVersion {
+		proposed.NodeInfo.KubeProxyVersion != existing.NodeInfo.KubeProxyVersion ||
+		proposed.NodeInfo.ContainerRuntimeVersion != existing.NodeInfo.ContainerRuntimeVersion {
 		logrus.Debugf("Changes in KubernetesInfo, "+
 			"KubeletVersion proposed %#v, existing: %#v"+
-			"KubeProxyVersion proposed %#v, existing: %#v",
+			"KubeProxyVersion proposed %#v, existing: %#v"+
+			"ContainerRuntimeVersion proposed %#v, existing: %#v",
 			proposed.NodeInfo.KubeletVersion, existing.NodeInfo.KubeletVersion,
-			proposed.NodeInfo.KubeProxyVersion, existing.NodeInfo.KubeProxyVersion)
+			proposed.NodeInfo.KubeProxyVersion, existing.NodeInfo.KubeProxyVersion,
+			proposed.NodeInfo.ContainerRuntimeVersion, existing.NodeInfo.ContainerRuntimeVersion)
 		return false
 	}
 

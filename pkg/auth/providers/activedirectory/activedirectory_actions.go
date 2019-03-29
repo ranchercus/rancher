@@ -2,11 +2,14 @@ package activedirectory
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mitchellh/mapstructure"
 	"github.com/rancher/norman/api/handler"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
+	"github.com/rancher/norman/types/convert"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
@@ -47,13 +50,21 @@ func (p *adProvider) testAndApply(actionName string, action *types.Action, reque
 		return httperror.NewAPIError(httperror.InvalidBodyContent,
 			fmt.Sprintf("Failed to parse body: %v", err))
 	}
-	logrus.Debugf("configApplyInput %v", configApplyInput)
 
 	config := &configApplyInput.ActiveDirectoryConfig
 
 	login := &v3public.BasicLogin{
 		Username: configApplyInput.Username,
 		Password: configApplyInput.Password,
+	}
+
+	if config.ServiceAccountPassword != "" {
+		value, err := common.ReadFromSecret(p.secrets, config.ServiceAccountPassword,
+			strings.ToLower(auth.TypeToField[client.ActiveDirectoryConfigType]))
+		if err != nil {
+			return err
+		}
+		config.ServiceAccountPassword = value
 	}
 
 	caPool, err := newCAPool(config.Certificate)
@@ -98,7 +109,14 @@ func (p *adProvider) saveActiveDirectoryConfig(config *v3.ActiveDirectoryConfig)
 	config.Type = client.ActiveDirectoryConfigType
 	config.ObjectMeta = storedConfig.ObjectMeta
 
-	logrus.Debugf("updating githubConfig")
+	field := strings.ToLower(auth.TypeToField[config.Type])
+	if err := common.CreateOrUpdateSecrets(p.secrets, config.ServiceAccountPassword, field, strings.ToLower(convert.ToString(config.Type))); err != nil {
+		return err
+	}
+
+	config.ServiceAccountPassword = common.GetName(config.Type, field)
+
+	logrus.Debugf("updating activeDirectoryConfig")
 	_, err = p.authConfigs.ObjectClient().Update(config.ObjectMeta.Name, config)
 	if err != nil {
 		return err

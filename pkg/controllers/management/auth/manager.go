@@ -23,6 +23,11 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+var commonClusterAndProjectMgmtPlaneResources = map[string]bool{
+	"catalogtemplates":        true,
+	"catalogtemplateversions": true,
+}
+
 func newRTBLifecycles(management *config.ManagementContext) (*prtbLifecycle, *crtbLifecycle) {
 	crbInformer := management.RBAC.ClusterRoleBindings("").Controller().Informer()
 	crbIndexers := map[string]cache.IndexFunc{
@@ -482,6 +487,12 @@ func (m *manager) grantManagementClusterScopedPrivilegesInProjectNamespace(roleT
 	for _, role := range roles {
 		resourceToVerbs := map[string]map[string]bool{}
 		for _, resource := range resources {
+			// Adding this check, because we want cluster-owners to have access to catalogtemplates/versions of all projects, but no other cluster roles
+			// need to access catalogtemplates of projects they do not belong to
+			if !role.Administrative && commonClusterAndProjectMgmtPlaneResources[resource] {
+				continue
+
+			}
 			verbs, err := m.checkForManagementPlaneRules(role, resource)
 			if err != nil {
 				return err
@@ -625,7 +636,7 @@ func (m *manager) reconcileDesiredMGMTPlaneRoleBindings(currentRBs, desiredRBs m
 	for _, rb := range desiredRBs {
 		logrus.Infof("[%v] Creating roleBinding for subject %v with role %v in namespace %v", m.controller, rb.Subjects[0].Name, rb.RoleRef.Name, rb.Namespace)
 		_, err := roleBindings.Create(rb)
-		if err != nil {
+		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
 	}

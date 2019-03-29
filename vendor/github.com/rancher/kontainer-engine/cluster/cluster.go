@@ -2,8 +2,10 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	errors2 "errors"
 	"fmt"
+	"reflect"
 
 	"github.com/rancher/kontainer-engine/logstream"
 	"github.com/rancher/kontainer-engine/types"
@@ -18,6 +20,7 @@ const (
 	Running     = "Running"
 	Error       = "Error"
 	Updating    = "Updating"
+	Init        = "Init"
 )
 
 var (
@@ -28,7 +31,7 @@ var (
 // Cluster represents a kubernetes cluster
 type Cluster struct {
 	// The cluster driver to provision cluster
-	Driver types.Driver `json:"-"`
+	Driver types.CloseableDriver `json:"-"`
 	// The name of the cluster driver
 	DriverName string `json:"driverName,omitempty" yaml:"driver_name,omitempty"`
 	// The name of the cluster
@@ -82,6 +85,9 @@ type ConfigGetter interface {
 
 // Create creates a cluster
 func (c *Cluster) Create(ctx context.Context) error {
+	if c.RootCACert != "" && c.Status == "" {
+		c.PersistStore.PersistStatus(*c, Init)
+	}
 	err := c.createInner(ctx)
 	if err != nil {
 		if err == ErrClusterExists {
@@ -182,7 +188,7 @@ func (c *Cluster) createInner(ctx context.Context) error {
 		info = toInfo(c)
 	}
 
-	if c.Status == Updating || c.Status == Running || c.Status == PostCheck {
+	if c.Status == Updating || c.Status == Running || c.Status == PostCheck || c.Status == Init {
 		logrus.Infof("Cluster %s already exists.", c.Name)
 		return ErrClusterExists
 	}
@@ -215,7 +221,17 @@ func (c *Cluster) Update(ctx context.Context) error {
 		return err
 	}
 	driverOpts.StringOptions["name"] = c.Name
+
 	for k, v := range c.Metadata {
+		if k == "state" {
+			state := make(map[string]interface{})
+			if err := json.Unmarshal([]byte(v), &state); err == nil {
+				flattenIfNotExist(state, &driverOpts)
+			}
+
+			continue
+		}
+
 		driverOpts.StringOptions[k] = v
 	}
 
@@ -281,19 +297,44 @@ func toInfo(c *Cluster) *types.ClusterInfo {
 }
 
 // Remove removes a cluster
-func (c *Cluster) Remove(ctx context.Context) error {
-	defer c.PersistStore.Remove(c.Name)
+func (c *Cluster) Remove(ctx context.Context, forceRemove bool) error {
 	if err := c.restore(); errors.IsNotFound(err) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 
-	return c.Driver.Remove(ctx, toInfo(c))
+	if err := c.Driver.Remove(ctx, toInfo(c)); err != nil {
+		// Persist store removal must take place despite error to prevent cluster from being stuck in remove state
+		// TODO: We should add a "forceRemove" action to cluster and then revert this to return an error, so that
+		//       the user can see the problem and take appropriate action
+		if !forceRemove {
+			return fmt.Errorf("Error removing cluster [%s] with driver [%s]: %v", c.Name, c.DriverName, err)
+		}
+		logrus.Errorf("Error removing cluster [%s] with driver [%s]. Check for stray resources on cloud provider: %v", c.Name, c.DriverName, err)
+	}
+	return c.PersistStore.Remove(c.Name)
 }
 
 func (c *Cluster) GetCapabilities(ctx context.Context) (*types.Capabilities, error) {
 	return c.Driver.GetCapabilities(ctx)
+}
+
+func (c *Cluster) GetK8SCapabilities(ctx context.Context) (*types.K8SCapabilities, error) {
+	options, err := c.ConfigGetter.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	return c.Driver.GetK8SCapabilities(ctx, &options)
+}
+
+func (c *Cluster) GetDriverCreateOptions(ctx context.Context) (*types.DriverFlags, error) {
+	return c.Driver.GetDriverCreateOptions(ctx)
+}
+
+func (c *Cluster) GetDriverUpdateOptions(ctx context.Context) (*types.DriverFlags, error) {
+	return c.Driver.GetDriverUpdateOptions(ctx)
 }
 
 func (c *Cluster) getState() (string, error) {
@@ -316,7 +357,7 @@ func (c *Cluster) restore() error {
 }
 
 // NewCluster create a cluster interface to do operations
-func NewCluster(driverName, addr, name string, configGetter ConfigGetter, persistStore PersistentStore) (*Cluster, error) {
+func NewCluster(driverName, name, addr string, configGetter ConfigGetter, persistStore PersistentStore) (*Cluster, error) {
 	rpcClient, err := types.NewClient(driverName, addr)
 	if err != nil {
 		return nil, err
@@ -339,4 +380,63 @@ func FromCluster(cluster *Cluster, addr string, configGetter ConfigGetter, persi
 	cluster.ConfigGetter = configGetter
 	cluster.PersistStore = persistStore
 	return cluster, nil
+}
+
+// flattenIfNotExist take a map into driverOptions, if the key not exist
+func flattenIfNotExist(data map[string]interface{}, driverOptions *types.DriverOptions) {
+	for k, v := range data {
+		switch v.(type) {
+		case float64:
+			if _, exist := driverOptions.IntOptions[k]; !exist {
+				driverOptions.IntOptions[k] = int64(v.(float64))
+			}
+		case string:
+			if _, exist := driverOptions.StringOptions[k]; !exist {
+				driverOptions.StringOptions[k] = v.(string)
+			}
+		case bool:
+			if _, exist := driverOptions.BoolOptions[k]; !exist {
+				driverOptions.BoolOptions[k] = v.(bool)
+			}
+		case []interface{}:
+			// lists of strings come across as lists of interfaces, have to convert them manually
+			var stringArray []string
+
+			for _, stringInterface := range v.([]interface{}) {
+				switch stringInterface.(type) {
+				case string:
+					stringArray = append(stringArray, stringInterface.(string))
+				}
+			}
+
+			// if the length is 0 then it must not have been an array of strings
+			if len(stringArray) != 0 {
+				if _, exist := driverOptions.StringSliceOptions[k]; !exist {
+					driverOptions.StringSliceOptions[k] = &types.StringSlice{Value: stringArray}
+				}
+			}
+		case []string:
+			if _, exist := driverOptions.StringSliceOptions[k]; !exist {
+				driverOptions.StringSliceOptions[k] = &types.StringSlice{Value: v.([]string)}
+			}
+		case map[string]interface{}:
+			// hack for labels
+			if k == "tags" {
+				r := make([]string, 0, 4)
+				for key1, value1 := range v.(map[string]interface{}) {
+					r = append(r, fmt.Sprintf("%v=%v", key1, value1))
+				}
+
+				if _, exist := driverOptions.StringSliceOptions[k]; !exist {
+					driverOptions.StringSliceOptions[k] = &types.StringSlice{Value: r}
+				}
+			} else {
+				flattenIfNotExist(v.(map[string]interface{}), driverOptions)
+			}
+		case nil:
+			logrus.Debugf("could not convert %v because value is nil %v=%v", reflect.TypeOf(v), k, v)
+		default:
+			logrus.Warnf("could not convert %v %v=%v", reflect.TypeOf(v), k, v)
+		}
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rancher/norman/controller"
+	"github.com/rancher/rancher/pkg/controllers/user/alert/common"
 	"github.com/rancher/rancher/pkg/controllers/user/alert/manager"
 	"github.com/rancher/rancher/pkg/controllers/user/workload"
 	"github.com/rancher/rancher/pkg/ticker"
@@ -27,30 +28,32 @@ const (
 )
 
 type WorkloadWatcher struct {
-	workloadController workload.CommonController
-	alertManager       *manager.Manager
-	projectAlerts      v3.ProjectAlertInterface
-	projectAlertLister v3.ProjectAlertLister
-	clusterName        string
-	clusterLister      v3.ClusterLister
-	namespaceIndexer   cache.Indexer
+	workloadController     workload.CommonController
+	alertManager           *manager.AlertManager
+	projectAlertPolicies   v3.ProjectAlertRuleInterface
+	projectAlertRuleLister v3.ProjectAlertRuleLister
+	clusterName            string
+	clusterLister          v3.ClusterLister
+	projectLister          v3.ProjectLister
+	namespaceIndexer       cache.Indexer
 }
 
-func StartWorkloadWatcher(ctx context.Context, cluster *config.UserContext, manager *manager.Manager) {
+func StartWorkloadWatcher(ctx context.Context, cluster *config.UserContext, manager *manager.AlertManager) {
 	nsInformer := cluster.Core.Namespaces("").Controller().Informer()
 	nsIndexers := map[string]cache.IndexFunc{
 		nsByProjectIndex: nsutils.NsByProjectID,
 	}
 	nsInformer.AddIndexers(nsIndexers)
-	projectAlerts := cluster.Management.Management.ProjectAlerts("")
+	projectAlerts := cluster.Management.Management.ProjectAlertRules("")
 	d := &WorkloadWatcher{
-		projectAlerts:      projectAlerts,
-		projectAlertLister: projectAlerts.Controller().Lister(),
-		workloadController: workload.NewWorkloadController(cluster.UserOnlyContext(), nil),
-		alertManager:       manager,
-		clusterName:        cluster.ClusterName,
-		clusterLister:      cluster.Management.Management.Clusters("").Controller().Lister(),
-		namespaceIndexer:   nsInformer.GetIndexer(),
+		projectAlertPolicies:   projectAlerts,
+		projectAlertRuleLister: projectAlerts.Controller().Lister(),
+		workloadController:     workload.NewWorkloadController(ctx, cluster.UserOnlyContext(), nil),
+		alertManager:           manager,
+		clusterName:            cluster.ClusterName,
+		clusterLister:          cluster.Management.Management.Clusters("").Controller().Lister(),
+		projectLister:          cluster.Management.Management.Projects(cluster.ClusterName).Controller().Lister(),
+		namespaceIndexer:       nsInformer.GetIndexer(),
 	}
 
 	go d.watch(ctx, syncInterval)
@@ -70,12 +73,12 @@ func (w *WorkloadWatcher) watchRule() error {
 		return nil
 	}
 
-	projectAlerts, err := w.projectAlertLister.List("", labels.NewSelector())
+	projectAlerts, err := w.projectAlertRuleLister.List("", labels.NewSelector())
 	if err != nil {
 		return err
 	}
 
-	pAlerts := []*v3.ProjectAlert{}
+	pAlerts := []*v3.ProjectAlertRule{}
 	for _, alert := range projectAlerts {
 		if controller.ObjectInCluster(w.clusterName, alert) {
 			pAlerts = append(pAlerts, alert)
@@ -83,37 +86,33 @@ func (w *WorkloadWatcher) watchRule() error {
 	}
 
 	for _, alert := range pAlerts {
-		if alert.Status.AlertState == "inactive" {
+		if alert.Status.AlertState == "inactive" || alert.Spec.WorkloadRule == nil {
 			continue
 		}
 
-		if alert.Spec.TargetWorkload == nil {
-			continue
-		}
+		if alert.Spec.WorkloadRule.WorkloadID != "" {
 
-		if alert.Spec.TargetWorkload.WorkloadID != "" {
-
-			wl, err := w.workloadController.GetByWorkloadID(alert.Spec.TargetWorkload.WorkloadID)
+			wl, err := w.workloadController.GetByWorkloadID(alert.Spec.WorkloadRule.WorkloadID)
 			if err != nil {
 				if kerrors.IsNotFound(err) || wl == nil {
-					if err = w.projectAlerts.DeleteNamespaced(alert.Namespace, alert.Name, &metav1.DeleteOptions{}); err != nil {
+					if err = w.projectAlertPolicies.DeleteNamespaced(alert.Namespace, alert.Name, &metav1.DeleteOptions{}); err != nil {
 						return err
 					}
 				}
-				logrus.Warnf("Fail to get workload for %s, %v", alert.Spec.TargetWorkload.WorkloadID, err)
+				logrus.Warnf("Fail to get workload for %s, %v", alert.Spec.WorkloadRule.WorkloadID, err)
 				continue
 			}
 
 			w.checkWorkloadCondition(wl, alert)
 
-		} else if alert.Spec.TargetWorkload.Selector != nil {
+		} else if alert.Spec.WorkloadRule.Selector != nil {
 			namespaces, err := w.namespaceIndexer.ByIndex(nsByProjectIndex, alert.Spec.ProjectName)
 			if err != nil {
 				return err
 			}
 			for _, n := range namespaces {
 				namespace, _ := n.(*corev1.Namespace)
-				wls, err := w.workloadController.GetWorkloadsMatchingSelector(namespace.Name, alert.Spec.TargetWorkload.Selector)
+				wls, err := w.workloadController.GetWorkloadsMatchingSelector(namespace.Name, alert.Spec.WorkloadRule.Selector)
 				if err != nil {
 					logrus.Warnf("Fail to list workload: %v", err)
 					continue
@@ -130,14 +129,13 @@ func (w *WorkloadWatcher) watchRule() error {
 	return nil
 }
 
-func (w *WorkloadWatcher) checkWorkloadCondition(wl *workload.Workload, alert *v3.ProjectAlert) {
+func (w *WorkloadWatcher) checkWorkloadCondition(wl *workload.Workload, alert *v3.ProjectAlertRule) {
 
 	if wl.Kind == workload.JobType || wl.Kind == workload.CronJobType {
 		return
 	}
 
-	alertID := alert.Namespace + "-" + alert.Name
-	percentage := alert.Spec.TargetWorkload.AvailablePercentage
+	percentage := alert.Spec.WorkloadRule.AvailablePercentage
 
 	if percentage == 0 {
 		return
@@ -146,29 +144,28 @@ func (w *WorkloadWatcher) checkWorkloadCondition(wl *workload.Workload, alert *v
 	availableThreshold := int32(percentage) * (wl.Status.Replicas) / 100
 
 	if wl.Status.AvailableReplicas < availableThreshold {
+		ruleID := common.GetRuleID(alert.Spec.GroupName, alert.Name)
 
-		clusterDisplayName := w.clusterName
-		cluster, err := w.clusterLister.Get("", w.clusterName)
-		if err != nil {
-			logrus.Warnf("Failed to get cluster for %s: %v", w.clusterName, err)
-		} else {
-			clusterDisplayName = cluster.Spec.DisplayName
-		}
+		clusterDisplayName := common.GetClusterDisplayName(w.clusterName, w.clusterLister)
+		projectDisplayName := common.GetProjectDisplayName(alert.Spec.ProjectName, w.projectLister)
 
 		data := map[string]string{}
+		data["rule_id"] = ruleID
+		data["group_id"] = alert.Spec.GroupName
 		data["alert_type"] = "workload"
-		data["alert_id"] = alertID
-		data["severity"] = alert.Spec.Severity
 		data["alert_name"] = alert.Spec.DisplayName
+		data["severity"] = alert.Spec.Severity
 		data["cluster_name"] = clusterDisplayName
+		data["project_name"] = projectDisplayName
 		data["workload_name"] = wl.Name
 		data["workload_namespace"] = wl.Namespace
+		data["workload_kind"] = wl.Kind
 		data["available_percentage"] = strconv.Itoa(percentage)
 		data["available_replicas"] = strconv.Itoa(int(wl.Status.AvailableReplicas))
 		data["desired_replicas"] = strconv.Itoa(int(wl.Status.Replicas))
 
 		if err := w.alertManager.SendAlert(data); err != nil {
-			logrus.Debugf("Failed to send alert: %v", err)
+			logrus.Errorf("Failed to send alert: %v", err)
 		}
 	}
 

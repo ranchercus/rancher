@@ -11,8 +11,11 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
+	"github.com/rancher/norman/types/convert"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/tokens"
+	corev1 "github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/management.cattle.io/v3public"
 	"github.com/rancher/types/client/management/v3"
@@ -32,6 +35,7 @@ const (
 type ghProvider struct {
 	ctx          context.Context
 	authConfigs  v3.AuthConfigInterface
+	secrets      corev1.SecretInterface
 	githubClient *GClient
 	userMGR      user.Manager
 	tokenMGR     *tokens.Manager
@@ -45,6 +49,7 @@ func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.
 	return &ghProvider{
 		ctx:          ctx,
 		authConfigs:  mgmtCtx.Management.AuthConfigs(""),
+		secrets:      mgmtCtx.Core.Secrets(""),
 		githubClient: githubClient,
 		userMGR:      userMGR,
 		tokenMGR:     tokenMGR,
@@ -71,7 +76,6 @@ func (g *ghProvider) getGithubConfigCR() (*v3.GithubConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve GithubConfig, error: %v", err)
 	}
-
 	u, ok := authConfigObj.(runtime.Unstructured)
 	if !ok {
 		return nil, fmt.Errorf("failed to retrieve GithubConfig, cannot read k8s Unstructured data")
@@ -90,6 +94,14 @@ func (g *ghProvider) getGithubConfigCR() (*v3.GithubConfig, error) {
 	mapstructure.Decode(metadataMap, typemeta)
 	storedGithubConfig.ObjectMeta = *typemeta
 
+	if storedGithubConfig.ClientSecret != "" {
+		value, err := common.ReadFromSecret(g.secrets, storedGithubConfig.ClientSecret, strings.ToLower(auth.TypeToField[client.GithubConfigType]))
+		if err != nil {
+			return nil, err
+		}
+		storedGithubConfig.ClientSecret = value
+	}
+
 	return storedGithubConfig, nil
 }
 
@@ -103,7 +115,14 @@ func (g *ghProvider) saveGithubConfig(config *v3.GithubConfig) error {
 	config.Type = client.GithubConfigType
 	config.ObjectMeta = storedGithubConfig.ObjectMeta
 
-	logrus.Debugf("updating githubConfig")
+	secretInfo := convert.ToString(config.ClientSecret)
+	field := strings.ToLower(auth.TypeToField[config.Type])
+	if err := common.CreateOrUpdateSecrets(g.secrets, secretInfo, field, strings.ToLower(config.Type)); err != nil {
+		return err
+	}
+
+	config.ClientSecret = common.GetName(config.Type, field)
+
 	_, err = g.authConfigs.ObjectClient().Update(config.ObjectMeta.Name, config)
 	if err != nil {
 		return err
@@ -116,7 +135,6 @@ func (g *ghProvider) AuthenticateUser(input interface{}) (v3.Principal, []v3.Pri
 	if !ok {
 		return v3.Principal{}, nil, "", errors.New("unexpected input type")
 	}
-
 	return g.LoginUser(login, nil, false)
 }
 
@@ -134,13 +152,11 @@ func (g *ghProvider) LoginUser(githubCredential *v3public.GithubLogin, config *v
 
 	securityCode := githubCredential.Code
 
-	logrus.Debugf("GitHubIdentityProvider AuthenticateUser called for securityCode %v", securityCode)
 	accessToken, err := g.githubClient.getAccessToken(securityCode, config)
 	if err != nil {
 		logrus.Infof("Error generating accessToken from github %v", err)
 		return v3.Principal{}, nil, "", err
 	}
-	logrus.Debugf("Received AccessToken from github %v", accessToken)
 
 	user, err := g.githubClient.getUser(accessToken, config)
 	if err != nil {
@@ -174,7 +190,7 @@ func (g *ghProvider) LoginUser(githubCredential *v3public.GithubLogin, config *v
 		testAllowedPrincipals = append(testAllowedPrincipals, userPrincipal.Name)
 	}
 
-	allowed, err := g.userMGR.CheckAccess(config.AccessMode, testAllowedPrincipals, userPrincipal, groupPrincipals)
+	allowed, err := g.userMGR.CheckAccess(config.AccessMode, testAllowedPrincipals, userPrincipal.Name, groupPrincipals)
 	if err != nil {
 		return v3.Principal{}, nil, "", err
 	}
@@ -183,6 +199,41 @@ func (g *ghProvider) LoginUser(githubCredential *v3public.GithubLogin, config *v
 	}
 
 	return userPrincipal, groupPrincipals, accessToken, nil
+}
+
+func (g *ghProvider) RefetchGroupPrincipals(principalID string, secret string) ([]v3.Principal, error) {
+	var groupPrincipals []v3.Principal
+	var err error
+	var config *v3.GithubConfig
+
+	if config == nil {
+		config, err = g.getGithubConfigCR()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	orgAccts, err := g.githubClient.getOrgs(secret, config)
+	if err != nil {
+		return nil, err
+	}
+	for _, orgAcct := range orgAccts {
+		groupPrincipal := g.toPrincipal(orgType, orgAcct, nil)
+		groupPrincipal.MemberOf = true
+		groupPrincipals = append(groupPrincipals, groupPrincipal)
+	}
+
+	teamAccts, err := g.githubClient.getTeams(secret, config)
+	if err != nil {
+		return nil, err
+	}
+	for _, teamAcct := range teamAccts {
+		groupPrincipal := g.toPrincipal(teamType, teamAcct, nil)
+		groupPrincipal.MemberOf = true
+		groupPrincipals = append(groupPrincipals, groupPrincipal)
+	}
+
+	return groupPrincipals, nil
 }
 
 func (g *ghProvider) SearchPrincipals(searchKey, principalType string, token v3.Token) ([]v3.Principal, error) {
@@ -194,7 +245,7 @@ func (g *ghProvider) SearchPrincipals(searchKey, principalType string, token v3.
 		return principals, err
 	}
 
-	accessToken, err := g.tokenMGR.GetSecret(&token)
+	accessToken, err := g.tokenMGR.GetSecret(token.UserID, token.AuthProvider, []*v3.Token{&token})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
@@ -231,7 +282,7 @@ func (g *ghProvider) GetPrincipal(principalID string, token v3.Token) (v3.Princi
 		return v3.Principal{}, err
 	}
 
-	accessToken, err := g.tokenMGR.GetSecret(&token)
+	accessToken, err := g.tokenMGR.GetSecret(token.UserID, token.AuthProvider, []*v3.Token{&token})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return v3.Principal{}, err
@@ -309,4 +360,17 @@ func (g *ghProvider) isThisUserMe(me v3.Principal, other v3.Principal) bool {
 		return true
 	}
 	return false
+}
+
+func (g *ghProvider) CanAccessWithGroupProviders(userPrincipalID string, groupPrincipals []v3.Principal) (bool, error) {
+	config, err := g.getGithubConfigCR()
+	if err != nil {
+		logrus.Errorf("Error fetching github config: %v", err)
+		return false, err
+	}
+	allowed, err := g.userMGR.CheckAccess(config.AccessMode, config.AllowedPrincipalIDs, userPrincipalID, groupPrincipals)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
 }

@@ -28,7 +28,7 @@ import (
 
 	"github.com/golang/glog"
 
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -330,7 +330,7 @@ func (g *genericScheduler) processPreemptionWithExtenders(
 // worth the complexity, especially because we generally expect to have a very
 // small number of nominated pods per node.
 func (g *genericScheduler) getLowerPriorityNominatedPods(pod *v1.Pod, nodeName string) []*v1.Pod {
-	pods := g.schedulingQueue.NominatedPodsForNode(nodeName)
+	pods := g.schedulingQueue.WaitingPodsForNode(nodeName)
 
 	if len(pods) == 0 {
 		return nil
@@ -474,14 +474,14 @@ func (g *genericScheduler) findNodesThatFit(pod *v1.Pod, nodes []*v1.Node) ([]*v
 // addNominatedPods adds pods with equal or greater priority which are nominated
 // to run on the node given in nodeInfo to meta and nodeInfo. It returns 1) whether
 // any pod was found, 2) augmented meta data, 3) augmented nodeInfo.
-func addNominatedPods(pod *v1.Pod, meta algorithm.PredicateMetadata,
+func addNominatedPods(podPriority int32, meta algorithm.PredicateMetadata,
 	nodeInfo *schedulercache.NodeInfo, queue SchedulingQueue) (bool, algorithm.PredicateMetadata,
 	*schedulercache.NodeInfo) {
 	if queue == nil || nodeInfo == nil || nodeInfo.Node() == nil {
 		// This may happen only in tests.
 		return false, meta, nodeInfo
 	}
-	nominatedPods := queue.NominatedPodsForNode(nodeInfo.Node().Name)
+	nominatedPods := queue.WaitingPodsForNode(nodeInfo.Node().Name)
 	if nominatedPods == nil || len(nominatedPods) == 0 {
 		return false, meta, nodeInfo
 	}
@@ -491,7 +491,7 @@ func addNominatedPods(pod *v1.Pod, meta algorithm.PredicateMetadata,
 	}
 	nodeInfoOut := nodeInfo.Clone()
 	for _, p := range nominatedPods {
-		if util.GetPodPriority(p) >= util.GetPodPriority(pod) && p.UID != pod.UID {
+		if util.GetPodPriority(p) >= podPriority {
 			nodeInfoOut.AddPod(p)
 			if metaOut != nil {
 				metaOut.AddPod(p, nodeInfoOut)
@@ -550,7 +550,7 @@ func podFitsOnNode(
 		metaToUse := meta
 		nodeInfoToUse := info
 		if i == 0 {
-			podsAdded, metaToUse, nodeInfoToUse = addNominatedPods(pod, meta, info, queue)
+			podsAdded, metaToUse, nodeInfoToUse = addNominatedPods(util.GetPodPriority(pod), meta, info, queue)
 		} else if !podsAdded || len(failedPredicates) != 0 {
 			break
 		}
@@ -873,6 +873,7 @@ func selectNodesForPreemption(pod *v1.Pod,
 	queue SchedulingQueue,
 	pdbs []*policy.PodDisruptionBudget,
 ) (map[*v1.Node]*schedulerapi.Victims, error) {
+
 	nodeToVictims := map[*v1.Node]*schedulerapi.Victims{}
 	var resultLock sync.Mutex
 
@@ -961,9 +962,6 @@ func selectVictimsOnNode(
 	queue SchedulingQueue,
 	pdbs []*policy.PodDisruptionBudget,
 ) ([]*v1.Pod, int, bool) {
-	if nodeInfo == nil {
-		return nil, 0, false
-	}
 	potentialVictims := util.SortableList{CompFunc: util.HigherPriorityPod}
 	nodeInfoCopy := nodeInfo.Clone()
 

@@ -60,6 +60,7 @@ func (s *AuthzSuite) TestClusterRoleTemplateBindingCreate(c *check.C) {
 				NonResourceURLs: []string{},
 			},
 		}, []string{podRORoleTemplateName}, false, c)
+	c.Assert(err, check.IsNil)
 
 	// create namespace and watchers for resources in that namespace
 	bindingWatcher := s.clusterBindingWatcher(c)
@@ -157,6 +158,7 @@ func (s *AuthzSuite) TestRoleTemplateBindingCreate(c *check.C) {
 				NonResourceURLs: []string{},
 			},
 		}, []string{podRORoleTemplateName}, false, c)
+	c.Assert(err, check.IsNil)
 
 	// create namespace and watchers for resources in that namespace
 	ns := setupNS("testauthzns1", projectName, s.clusterClient.CoreV1().Namespaces(), c)
@@ -232,6 +234,7 @@ func (s *AuthzSuite) TestBuiltinRoleTemplateBindingCreate(c *check.C) {
 	rtName := "testrt2"
 	_, err := s.createRoleTemplate(rtName,
 		[]rbacv1.PolicyRule{}, []string{}, true, c)
+	c.Assert(err, check.IsNil)
 
 	// create namespace and watchers for resources in that namespace
 	ns := setupNS("testauthzbuiltinns1", projectName, s.clusterClient.CoreV1().Namespaces(), c)
@@ -388,9 +391,11 @@ func (s *AuthzSuite) SetUpSuite(c *check.C) {
 	s.ctx = workload
 	s.setupCRDs(c)
 
-	rbac.Register(workload)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	ctx := context.Background()
+	rbac.Register(ctx, workload)
+
 	err := workload.Start(ctx)
 	c.Assert(err, check.IsNil)
 	err = workload.Management.Start(ctx)

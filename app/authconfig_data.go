@@ -7,9 +7,11 @@ import (
 	"github.com/rancher/rancher/pkg/auth/providers/ldap"
 	localprovider "github.com/rancher/rancher/pkg/auth/providers/local"
 	"github.com/rancher/rancher/pkg/auth/providers/saml"
+	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/config"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -47,6 +49,14 @@ func addAuthConfigs(management *config.ManagementContext) error {
 		return err
 	}
 
+	if err := addAuthConfig(saml.OKTAName, client.OKTAConfigType, false, management); err != nil {
+		return err
+	}
+
+	if err := createMgmtNamespace(management); err != nil {
+		return err
+	}
+
 	return addAuthConfig(localprovider.Name, client.LocalConfigType, true, management)
 }
 
@@ -62,5 +72,17 @@ func addAuthConfig(name, aType string, enabled bool, management *config.Manageme
 		return err
 	}
 
+	return nil
+}
+
+func createMgmtNamespace(management *config.ManagementContext) error {
+	_, err := management.Core.Namespaces("").Create(&corev1.Namespace{
+		ObjectMeta: v1.ObjectMeta{
+			Name: namespace.GlobalNamespace,
+		},
+	})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
 	return nil
 }

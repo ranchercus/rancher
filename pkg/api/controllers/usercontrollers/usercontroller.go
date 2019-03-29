@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/rancher/pkg/clustermanager"
@@ -29,7 +31,7 @@ func Register(ctx context.Context, scaledContext *config.ScaledContext, clusterM
 		start:         time.Now(),
 	}
 
-	scaledContext.Management.Clusters("").AddHandler("user-controllers-controller", u.sync)
+	scaledContext.Management.Clusters("").AddHandler(ctx, "user-controllers-controller", u.sync)
 
 	if scaledContext.PeerManager != nil {
 		c := make(chan tpeermanager.Peers, 100)
@@ -75,14 +77,14 @@ type userControllersController struct {
 	start         time.Time
 }
 
-func (u *userControllersController) sync(key string, cluster *v3.Cluster) error {
+func (u *userControllersController) sync(key string, cluster *v3.Cluster) (runtime.Object, error) {
 	if cluster != nil && cluster.DeletionTimestamp != nil {
 		err := u.cleanFinalizers(key, cluster)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return u.setPeers(nil)
+	return nil, u.setPeers(nil)
 }
 
 func (u *userControllersController) setPeers(peers *tpeermanager.Peers) error {

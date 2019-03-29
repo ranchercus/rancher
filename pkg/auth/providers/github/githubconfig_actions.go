@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
-
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/management.cattle.io/v3public"
 	"github.com/rancher/types/client/management/v3"
 )
@@ -90,10 +91,18 @@ func (g *ghProvider) testAndApply(actionName string, action *types.Action, reque
 		return httperror.NewAPIError(httperror.InvalidBodyContent,
 			fmt.Sprintf("Failed to parse body: %v", err))
 	}
-
 	githubConfig = githubConfigApplyInput.GithubConfig
 	githubLogin := &v3public.GithubLogin{
 		Code: githubConfigApplyInput.Code,
+	}
+
+	if githubConfig.ClientSecret != "" {
+		value, err := common.ReadFromSecret(g.secrets, githubConfig.ClientSecret,
+			strings.ToLower(auth.TypeToField[client.GithubConfigType]))
+		if err != nil {
+			return err
+		}
+		githubConfig.ClientSecret = value
 	}
 
 	//Call provider to testLogin

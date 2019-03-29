@@ -3,6 +3,7 @@ package cluster
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,26 +16,80 @@ import (
 	"github.com/rancher/norman/types/values"
 	ccluster "github.com/rancher/rancher/pkg/api/customization/cluster"
 	"github.com/rancher/rancher/pkg/clustermanager"
+	"github.com/rancher/rancher/pkg/controllers/management/clusterprovisioner"
 	"github.com/rancher/rancher/pkg/controllers/management/clusterstatus"
 	"github.com/rancher/rancher/pkg/settings"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
 	managementv3 "github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/config"
+	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/labels"
+)
+
+const (
+	DefaultBackupIntervalHours = 12
+	DefaultBackupRetention     = 6
 )
 
 type Store struct {
 	types.Store
-	ShellHandler types.RequestHandler
-	mu           sync.Mutex
+	ShellHandler          types.RequestHandler
+	mu                    sync.Mutex
+	KontainerDriverLister v3.KontainerDriverLister
+}
+
+type transformer struct {
+	KontainerDriverLister v3.KontainerDriverLister
+}
+
+func (t *transformer) TransformerFunc(apiContext *types.APIContext, schema *types.Schema, data map[string]interface{}, opt *types.QueryOptions) (map[string]interface{}, error) {
+	data = transformSetNilSnapshotFalse(data)
+	return t.transposeGenericConfigToDynamicField(data)
+}
+
+//transposeGenericConfigToDynamicField converts a genericConfig to one usable by rancher and maps a kontainer id to a kontainer name
+func (t *transformer) transposeGenericConfigToDynamicField(data map[string]interface{}) (map[string]interface{}, error) {
+	if data["genericEngineConfig"] != nil {
+		drivers, err := t.KontainerDriverLister.List("", labels.Everything())
+		if err != nil {
+			return nil, err
+		}
+
+		var driver *v3.KontainerDriver
+		driverName := data["genericEngineConfig"].(map[string]interface{})[clusterprovisioner.DriverNameField].(string)
+		// iterate over kontainer drivers to find the one that maps to the genericEngineConfig DriverName ("kd-**") -> "example"
+		for _, candidate := range drivers {
+			if driverName == candidate.Name {
+				driver = candidate
+				break
+			}
+		}
+		if driver == nil {
+			logrus.Warnf("unable to find the kontainer driver %v that maps to %v", driverName, data[clusterprovisioner.DriverNameField])
+			return data, nil
+		}
+
+		var driverTypeName string
+		if driver.Spec.BuiltIn {
+			driverTypeName = driver.Status.DisplayName + "Config"
+		} else {
+			driverTypeName = driver.Status.DisplayName + "EngineConfig"
+		}
+
+		data[driverTypeName] = data["genericEngineConfig"]
+		delete(data, "genericEngineConfig")
+	}
+
+	return data, nil
 }
 
 func SetClusterStore(schema *types.Schema, mgmt *config.ScaledContext, clusterManager *clustermanager.Manager, k8sProxy http.Handler) {
+	transformer := transformer{
+		KontainerDriverLister: mgmt.Management.KontainerDrivers("").Controller().Lister(),
+	}
 	t := &transform.Store{
-		Store: schema.Store,
-		Transformer: func(apiContext *types.APIContext, schema *types.Schema, data map[string]interface{}, opt *types.QueryOptions) (map[string]interface{}, error) {
-			data = transformSetNilSnapshotFalse(data)
-
-			return data, nil
-		},
+		Store:       schema.Store,
+		Transformer: transformer.TransformerFunc,
 	}
 
 	linkHandler := &ccluster.ShellLinkHandler{
@@ -43,8 +98,9 @@ func SetClusterStore(schema *types.Schema, mgmt *config.ScaledContext, clusterMa
 	}
 
 	s := &Store{
-		Store:        t,
-		ShellHandler: linkHandler.LinkHandler,
+		Store:                 t,
+		KontainerDriverLister: mgmt.Management.KontainerDrivers("").Controller().Lister(),
+		ShellHandler:          linkHandler.LinkHandler,
 	}
 
 	schema.Store = s
@@ -83,6 +139,7 @@ func (r *Store) ByID(apiContext *types.APIContext, schema *types.Schema, id stri
 	if apiContext.Query.Get("shell") == "true" {
 		return nil, r.ShellHandler(apiContext, nil)
 	}
+
 	return r.Store.ByID(apiContext, schema, id)
 }
 
@@ -100,20 +157,68 @@ func (r *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 	}
 
 	setKubernetesVersion(data)
+	// enable local backups for rke clusters by default
+	enableLocalBackup(data)
+
+	data, err := r.transposeDynamicFieldToGenericConfig(data)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := validateNetworkFlag(data, true); err != nil {
 		return nil, httperror.NewFieldAPIError(httperror.InvalidOption, "enableNetworkPolicy", err.Error())
 	}
 
-	if eksConfig := data[managementv3.ClusterFieldAmazonElasticContainerServiceConfig]; eksConfig != nil {
-		sessionToken, _ := values.GetValue(data, managementv3.ClusterFieldAmazonElasticContainerServiceConfig, managementv3.AmazonElasticContainerServiceConfigFieldSessionToken)
+	if driverName, _ := values.GetValue(data, "genericEngineConfig", "driverName"); driverName == "amazonelasticcontainerservice" {
+		sessionToken, _ := values.GetValue(data, "genericEngineConfig", "sessionToken")
 		annotation, _ := values.GetValue(data, managementv3.ClusterFieldAnnotations)
 		m := toMap(annotation)
-		m[clusterstatus.TemporaryCredentialsAnnotationKey] = strconv.FormatBool(sessionToken != nil)
+		m[clusterstatus.TemporaryCredentialsAnnotationKey] = strconv.FormatBool(
+			sessionToken != "" && sessionToken != nil)
 		values.PutValue(data, m, managementv3.ClusterFieldAnnotations)
 	}
 
+	if err = setInitialConditions(data); err != nil {
+		return nil, err
+	}
+
 	return r.Store.Create(apiContext, schema, data)
+}
+
+func setInitialConditions(data map[string]interface{}) error {
+	if data[managementv3.ClusterStatusFieldConditions] == nil {
+		data[managementv3.ClusterStatusFieldConditions] = []map[string]interface{}{}
+	}
+
+	conditions, ok := data[managementv3.ClusterStatusFieldConditions].([]map[string]interface{})
+	if !ok {
+		return fmt.Errorf("unable to parse field \"%v\" type \"%v\" as \"[]map[string]interface{}\"",
+			managementv3.ClusterStatusFieldConditions, reflect.TypeOf(data[managementv3.ClusterStatusFieldConditions]))
+	}
+	for key := range data {
+		if strings.Index(key, "Config") == len(key)-6 {
+			data[managementv3.ClusterStatusFieldConditions] =
+				append(
+					conditions,
+					[]map[string]interface{}{
+						{
+							"status": "True",
+							"type":   string(v3.ClusterConditionPending),
+						},
+						{
+							"status": "Unknown",
+							"type":   string(v3.ClusterConditionProvisioned),
+						},
+						{
+							"status": "Unknown",
+							"type":   string(v3.ClusterConditionWaiting),
+						},
+					}...,
+				)
+		}
+	}
+
+	return nil
 }
 
 func toMap(rawMap interface{}) map[string]interface{} {
@@ -125,7 +230,6 @@ func toMap(rawMap interface{}) map[string]interface{} {
 }
 
 func (r *Store) Update(apiContext *types.APIContext, schema *types.Schema, data map[string]interface{}, id string) (map[string]interface{}, error) {
-
 	updatedName := convert.ToString(data["name"])
 	if updatedName == "" {
 		return nil, httperror.NewFieldAPIError(httperror.MissingRequired, "Cluster name", "")
@@ -152,11 +256,63 @@ func (r *Store) Update(apiContext *types.APIContext, schema *types.Schema, data 
 
 	setKubernetesVersion(data)
 
+	data, err = r.transposeDynamicFieldToGenericConfig(data)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := validateNetworkFlag(data, false); err != nil {
 		return nil, httperror.NewFieldAPIError(httperror.InvalidOption, "enableNetworkPolicy", err.Error())
 	}
 
+	setBackupConfigSecretKeyIfNotExists(existingCluster, data)
+	setPrivateRegistryPasswordIfNotExists(existingCluster, data)
+
 	return r.Store.Update(apiContext, schema, data, id)
+}
+
+// this method moves the cluster config to and from the genericEngineConfig field so that
+// the kontainer drivers behave similarly to the existing machine drivers
+func (r *Store) transposeDynamicFieldToGenericConfig(data map[string]interface{}) (map[string]interface{}, error) {
+	dynamicField, err := r.getDynamicField(data)
+	if err != nil {
+		return nil, fmt.Errorf("error getting kontainer drivers: %v", err)
+	}
+
+	// No dynamic schema field exists on this cluster so return immediately
+	if dynamicField == "" {
+		return data, nil
+	}
+
+	// overwrite generic engine config so it gets saved
+	data["genericEngineConfig"] = data[dynamicField]
+	delete(data, dynamicField)
+
+	return data, nil
+}
+
+func (r *Store) getDynamicField(data map[string]interface{}) (string, error) {
+	drivers, err := r.KontainerDriverLister.List("", labels.Everything())
+	if err != nil {
+		return "", err
+	}
+
+	for _, driver := range drivers {
+		var driverName string
+		if driver.Spec.BuiltIn {
+			driverName = driver.Status.DisplayName + "Config"
+		} else {
+			driverName = driver.Status.DisplayName + "EngineConfig"
+		}
+
+		if data[driverName] != nil {
+			if !(driver.Status.DisplayName == "rancherKubernetesEngine" || driver.Status.DisplayName == "import") {
+				return driverName, nil
+			}
+		}
+	}
+
+	return "", nil
 }
 
 func canUseClusterName(apiContext *types.APIContext, requestedName string) error {
@@ -211,4 +367,70 @@ func validateNetworkFlag(data map[string]interface{}, create bool) error {
 	}
 
 	return nil
+}
+
+func enableLocalBackup(data map[string]interface{}) {
+	rkeConfig, ok := values.GetValue(data, "rancherKubernetesEngineConfig")
+
+	if ok && rkeConfig != nil {
+		legacyConfig := values.GetValueN(data, "rancherKubernetesEngineConfig", "services", "etcd", "snapshot")
+		if legacyConfig != nil && legacyConfig.(bool) { //  don't enable rancher backup if legacy is enabled.
+			return
+		}
+		backupConfig := values.GetValueN(data, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig")
+
+		if backupConfig == nil {
+			enabled := true
+			backupConfig = &v3.BackupConfig{
+				Enabled:       &enabled,
+				IntervalHours: DefaultBackupIntervalHours,
+				Retention:     DefaultBackupRetention,
+			}
+			// enable rancher etcd backup
+			values.PutValue(data, backupConfig, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig")
+		}
+	}
+}
+
+func setBackupConfigSecretKeyIfNotExists(oldData, newData map[string]interface{}) {
+	s3BackupConfig := values.GetValueN(newData, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig")
+	if s3BackupConfig == nil {
+		return
+	}
+	val := convert.ToMapInterface(s3BackupConfig)
+	if val["secretKey"] != nil {
+		return
+	}
+	oldSecretKey := convert.ToString(values.GetValueN(oldData, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig", "secretKey"))
+	if oldSecretKey != "" {
+		values.PutValue(newData, oldSecretKey, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig", "secretKey")
+	}
+}
+
+func setPrivateRegistryPasswordIfNotExists(oldData, newData map[string]interface{}) {
+	newSlice, ok := values.GetSlice(newData, "rancherKubernetesEngineConfig", "privateRegistries")
+	if !ok || newSlice == nil {
+		return
+	}
+	oldSlice, ok := values.GetSlice(oldData, "rancherKubernetesEngineConfig", "privateRegistries")
+	if !ok || oldSlice == nil {
+		return
+	}
+
+	var updatedConfig []map[string]interface{}
+	for _, newConfig := range newSlice {
+		if newConfig["password"] != nil {
+			updatedConfig = append(updatedConfig, newConfig)
+			continue
+		}
+		for _, oldConfig := range oldSlice {
+			if newConfig["url"] == oldConfig["url"] && newConfig["user"] == oldConfig["user"] &&
+				oldConfig["password"] != nil {
+				newConfig["password"] = oldConfig["password"]
+				break
+			}
+		}
+		updatedConfig = append(updatedConfig, newConfig)
+	}
+	values.PutValue(newData, updatedConfig, "rancherKubernetesEngineConfig", "privateRegistries")
 }

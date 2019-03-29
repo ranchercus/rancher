@@ -26,7 +26,7 @@ import (
 	"time"
 	"unicode"
 
-	restful "github.com/emicklei/go-restful"
+	"github.com/emicklei/go-restful"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/conversion"
@@ -38,11 +38,6 @@ import (
 	"k8s.io/apiserver/pkg/endpoints/handlers/negotiation"
 	"k8s.io/apiserver/pkg/endpoints/metrics"
 	"k8s.io/apiserver/pkg/registry/rest"
-	genericfilters "k8s.io/apiserver/pkg/server/filters"
-	utilopenapi "k8s.io/apiserver/pkg/util/openapi"
-	openapibuilder "k8s.io/kube-openapi/pkg/builder"
-	openapiutil "k8s.io/kube-openapi/pkg/util"
-	openapiproto "k8s.io/kube-openapi/pkg/util/proto"
 )
 
 const (
@@ -54,7 +49,6 @@ type APIInstaller struct {
 	group                        *APIGroupVersion
 	prefix                       string // Path prefix where API resources are to be registered.
 	minRequestTimeout            time.Duration
-	enableAPIResponseCompression bool
 }
 
 // Struct capturing information about an action ("GET", "POST", "WATCH", "PROXY", etc).
@@ -511,10 +505,6 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	if a.group.MetaGroupVersion != nil {
 		reqScope.MetaGroupVersion = *a.group.MetaGroupVersion
 	}
-	reqScope.OpenAPISchema, err = a.getOpenAPISchema(ws.RootPath(), resource, fqKindToRegister, defaultVersionedObject)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get openapi schema for %v: %v", fqKindToRegister, err)
-	}
 	for _, action := range actions {
 		producedObject := storageMeta.ProducesObject(action.Verb)
 		if producedObject == nil {
@@ -581,9 +571,6 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 				handler = metrics.InstrumentRouteFunc(action.Verb, resource, subresource, requestScope, handler)
 			}
 
-			if a.enableAPIResponseCompression {
-				handler = genericfilters.RestfulWithCompression(handler)
-			}
 			doc := "read the specified " + kind
 			if isSubresource {
 				doc = "read " + subresource + " of the specified " + kind
@@ -613,9 +600,6 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 				doc = "list " + subresource + " of objects of kind " + kind
 			}
 			handler := metrics.InstrumentRouteFunc(action.Verb, resource, subresource, requestScope, restfulListResource(lister, watcher, reqScope, false, a.minRequestTimeout))
-			if a.enableAPIResponseCompression {
-				handler = genericfilters.RestfulWithCompression(handler)
-			}
 			route := ws.GET(action.Path).To(handler).
 				Doc(doc).
 				Param(ws.QueryParameter("pretty", "If 'true', then the output is pretty printed.")).
@@ -868,24 +852,6 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	}
 
 	return &apiResource, nil
-}
-
-// getOpenAPISchema builds the openapi schema for a single resource model to be given to each handler. It will
-// return nil if the apiserver doesn't have openapi enabled, or if the specific path should be ignored by openapi.
-func (a *APIInstaller) getOpenAPISchema(rootPath, resource string, kind schema.GroupVersionKind, sampleObject interface{}) (openapiproto.Schema, error) {
-	path := gpath.Join(rootPath, resource)
-	if a.group.OpenAPIConfig == nil {
-		return nil, nil
-	}
-	pathsToIgnore := openapiutil.NewTrie(a.group.OpenAPIConfig.IgnorePrefixes)
-	if pathsToIgnore.HasPrefix(path) {
-		return nil, nil
-	}
-	openAPIDefinitions, err := openapibuilder.BuildOpenAPIDefinitionsForResource(sampleObject, a.group.OpenAPIConfig)
-	if err != nil {
-		return nil, err
-	}
-	return utilopenapi.ToProtoSchema(openAPIDefinitions, kind)
 }
 
 // indirectArbitraryPointer returns *ptrToObject for an arbitrary pointer

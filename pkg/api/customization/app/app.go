@@ -1,10 +1,8 @@
 package app
 
 import (
-	"net/http"
-
 	"fmt"
-
+	"net/http"
 	"reflect"
 
 	"github.com/rancher/norman/api/access"
@@ -12,6 +10,7 @@ import (
 	"github.com/rancher/norman/parse"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
+	"github.com/rancher/norman/types/values"
 	"github.com/rancher/rancher/pkg/controllers/management/compose/common"
 	hcommon "github.com/rancher/rancher/pkg/controllers/user/helm/common"
 	"github.com/rancher/rancher/pkg/ref"
@@ -21,45 +20,38 @@ import (
 	projectschema "github.com/rancher/types/apis/project.cattle.io/v3/schema"
 	clusterv3 "github.com/rancher/types/client/cluster/v3"
 	projectv3 "github.com/rancher/types/client/project/v3"
+	"github.com/rancher/types/user"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type Wrapper struct {
 	Clusters              v3.ClusterInterface
-	TemplateVersionClient v3.TemplateVersionInterface
+	TemplateVersionClient v3.CatalogTemplateVersionInterface
 	KubeConfigGetter      common.KubeConfigGetter
-	TemplateContentClient v3.TemplateContentInterface
 	AppGetter             pv3.AppsGetter
+	UserLister            v3.UserLister
+	UserManager           user.Manager
 }
 
 const (
-	appLabel       = "io.cattle.field/appId"
-	activeState    = "active"
-	deployingState = "deploying"
+	appLabel      = "io.cattle.field/appId"
+	MCappLabel    = "mcapp"
+	creatorIDAnno = "field.cattle.io/creatorId"
 )
 
 func Formatter(apiContext *types.APIContext, resource *types.RawResource) {
-	resource.AddAction(apiContext, "upgrade")
-	resource.AddAction(apiContext, "rollback")
+	mcappLabel := convert.ToString(values.GetValueN(resource.Values, "labels", MCappLabel))
+	if mcappLabel == "" {
+		resource.AddAction(apiContext, "upgrade")
+		resource.AddAction(apiContext, "rollback")
+	} else {
+		delete(resource.Links, "remove")
+	}
 	resource.Links["revision"] = apiContext.URLBuilder.Link("revision", resource)
 	if _, ok := resource.Values["status"]; ok {
 		if status, ok := resource.Values["status"].(map[string]interface{}); ok {
 			delete(status, "lastAppliedTemplate")
-		}
-	}
-	var workloads []projectv3.Workload
-	if err := access.List(apiContext, &projectschema.Version, projectv3.WorkloadType, &types.QueryOptions{}, &workloads); err == nil {
-		for _, w := range workloads {
-			_, appID := ref.Parse(resource.ID)
-			if w.WorkloadLabels[appLabel] == appID && w.State != activeState {
-				resource.Values["state"] = deployingState
-				resource.Values["transitioning"] = "yes"
-				transitionMsg := convert.ToString(resource.Values["transitioningMessage"])
-				if transitionMsg != "" {
-					transitionMsg += "; "
-				}
-				resource.Values["transitioningMessage"] = transitionMsg + fmt.Sprintf("Workload %s: %s", w.Name, w.TransitioningMessage)
-			}
 		}
 	}
 	delete(resource.Values, "appliedFiles")
@@ -71,11 +63,11 @@ func (w Wrapper) Validator(request *types.APIContext, schema *types.Schema, data
 	if externalID == "" {
 		return nil
 	}
-	templateVersionID, err := hcommon.ParseExternalID(externalID)
+	templateVersionID, templateVersionNamespace, err := hcommon.ParseExternalID(externalID)
 	if err != nil {
 		return err
 	}
-	templateVersion, err := w.TemplateVersionClient.Get(templateVersionID, metav1.GetOptions{})
+	templateVersion, err := w.TemplateVersionClient.GetNamespaced(templateVersionNamespace, templateVersionID, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -101,6 +93,17 @@ func (w Wrapper) ActionHandler(actionName string, action *types.Action, apiConte
 	if err := access.ByID(apiContext, &projectschema.Version, projectv3.AppType, apiContext.ID, &app); err != nil {
 		return err
 	}
+
+	creatorNotFound := false
+	if _, err := w.UserLister.Get("", app.CreatorID); err != nil && apierrors.IsNotFound(err) {
+		creatorNotFound = true
+	}
+	userCanCreateApp := apiContext.AccessControl.CanCreate(apiContext, apiContext.Schema) == nil
+
+	if creatorNotFound && !userCanCreateApp {
+		return httperror.NewAPIError(httperror.PermissionDenied, "can not upgrade/rollback app")
+	}
+
 	actionInput, err := parse.ReadBody(apiContext.Request)
 	if err != nil {
 		return err
@@ -109,6 +112,9 @@ func (w Wrapper) ActionHandler(actionName string, action *types.Action, apiConte
 	case "upgrade":
 		externalID := actionInput["externalId"]
 		answers := actionInput["answers"]
+		forceUpgrade := actionInput["forceUpgrade"]
+		files := actionInput["files"]
+		valuesYaml := actionInput["valuesYaml"]
 		_, namespace := ref.Parse(app.ProjectID)
 		obj, err := w.AppGetter.Apps(namespace).Get(app.Name, metav1.GetOptions{})
 		if err != nil {
@@ -124,18 +130,42 @@ func (w Wrapper) ActionHandler(actionName string, action *types.Action, apiConte
 			}
 		}
 		obj.Spec.ExternalID = convert.ToString(externalID)
+		if convert.ToBool(forceUpgrade) {
+			pv3.AppConditionForceUpgrade.Unknown(obj)
+		}
+		if creatorNotFound {
+			obj.Annotations[creatorIDAnno] = w.UserManager.GetUser(apiContext)
+		}
+		if files != nil {
+			inputFiles := convert.ToMapInterface(files)
+			if len(inputFiles) != 0 {
+				targetFiles := make(map[string]string)
+				for k, v := range inputFiles {
+					targetFiles[k] = convert.ToString(v)
+				}
+
+				obj.Spec.Files = targetFiles
+				obj.Spec.ExternalID = "" // ignore externalID
+			}
+		}
+		if valuesYaml != nil {
+			obj.Spec.ValuesYaml = convert.ToString(valuesYaml)
+		}
+
 		if _, err := w.AppGetter.Apps(namespace).Update(obj); err != nil {
 			return err
 		}
+		apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
 		return nil
 	case "rollback":
-		revision := actionInput["revisionId"]
-		if convert.ToString(revision) == "" {
+		forceUpgrade := actionInput["forceUpgrade"]
+		revisionName := convert.ToString(actionInput["revisionId"])
+		if revisionName == "" {
 			return fmt.Errorf("revision is empty")
 		}
-		var appRevision projectv3.AppRevision
 		_, projectID := ref.Parse(app.ProjectID)
-		revisionID := fmt.Sprintf("%s:%s", projectID, convert.ToString(revision))
+		revisionID := fmt.Sprintf("%s:%s", projectID, revisionName)
+		var appRevision projectv3.AppRevision
 		if err := access.ByID(apiContext, &projectschema.Version, projectv3.AppRevisionType, revisionID, &appRevision); err != nil {
 			return err
 		}
@@ -146,9 +176,18 @@ func (w Wrapper) ActionHandler(actionName string, action *types.Action, apiConte
 		}
 		obj.Spec.Answers = appRevision.Status.Answers
 		obj.Spec.ExternalID = appRevision.Status.ExternalID
+		if convert.ToBool(forceUpgrade) {
+			pv3.AppConditionForceUpgrade.Unknown(obj)
+		}
+		if creatorNotFound {
+			obj.Annotations[creatorIDAnno] = w.UserManager.GetUser(apiContext)
+		}
+		obj.Spec.Files = appRevision.Status.Files
+
 		if _, err := w.AppGetter.Apps(namespace).Update(obj); err != nil {
 			return err
 		}
+		apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
 		return nil
 	}
 	return nil

@@ -17,26 +17,31 @@ type PipelineEngine interface {
 	SyncExecution(execution *v3.PipelineExecution) (bool, error)
 }
 
-func New(cluster *config.UserContext) PipelineEngine {
+func New(cluster *config.UserContext, useCache bool) PipelineEngine {
 	serviceLister := cluster.Core.Services("").Controller().Lister()
 	podLister := cluster.Core.Pods("").Controller().Lister()
 	secrets := cluster.Core.Secrets("")
 	secretLister := secrets.Controller().Lister()
 	managementSecretLister := cluster.Management.Core.Secrets("").Controller().Lister()
-	sourceCodeCredentialLister := cluster.Management.Project.SourceCodeCredentials("").Controller().Lister()
+	sourceCodeCredentials := cluster.Management.Project.SourceCodeCredentials("")
+	sourceCodeCredentialLister := sourceCodeCredentials.Controller().Lister()
 	pipelineLister := cluster.Management.Project.Pipelines("").Controller().Lister()
+	pipelineSettingLister := cluster.Management.Project.PipelineSettings("").Controller().Lister()
 	dialer := cluster.Management.Dialer
 	tokenInformer := cluster.Management.Management.Tokens("").Controller().Informer()
 	tokenInformer.AddIndexers(map[string]cache.IndexFunc{"authn.management.cattle.io/uid-key-index": uidKeyIndexer})
 
 	engine := &jenkins.Engine{
+		UseCache:                   useCache,
 		ServiceLister:              serviceLister,
 		PodLister:                  podLister,
 		Secrets:                    secrets,
 		SecretLister:               secretLister,
 		ManagementSecretLister:     managementSecretLister,
+		SourceCodeCredentials:      sourceCodeCredentials,
 		SourceCodeCredentialLister: sourceCodeCredentialLister,
 		PipelineLister:             pipelineLister,
+		PipelineSettingLister:      pipelineSettingLister,
 
 		Dialer:       dialer,
 		ClusterName:  cluster.ClusterName,

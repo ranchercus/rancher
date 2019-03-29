@@ -1,7 +1,10 @@
 package podsecuritypolicy
 
 import (
+	"context"
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/config"
@@ -11,7 +14,7 @@ import (
 
 const psptpbByPSPTNameIndex = "something.something.psptpb/pspt-name"
 
-func Register(management *config.ManagementContext) {
+func Register(ctx context.Context, management *config.ManagementContext) {
 	psptpbInformer := management.Management.PodSecurityPolicyTemplateProjectBindings("").Controller().Informer()
 	psptpbIndexers := map[string]cache.IndexFunc{
 		psptpbByPSPTNameIndex: PSPTPBByPSPTName,
@@ -25,7 +28,7 @@ func Register(management *config.ManagementContext) {
 		psptpbIndexer: psptpbInformer.GetIndexer(),
 	}
 
-	management.Management.PodSecurityPolicyTemplates("").AddLifecycle("mgmt-pspt-lfc-handler", lifecycle)
+	management.Management.PodSecurityPolicyTemplates("").AddLifecycle(ctx, "mgmt-pspt-lfc-handler", lifecycle)
 }
 
 type lifecycle struct {
@@ -35,15 +38,15 @@ type lifecycle struct {
 	psptpbIndexer cache.Indexer
 }
 
-func (l *lifecycle) Create(obj *v3.PodSecurityPolicyTemplate) (*v3.PodSecurityPolicyTemplate, error) {
+func (l *lifecycle) Create(obj *v3.PodSecurityPolicyTemplate) (runtime.Object, error) {
 	return obj, nil
 }
 
-func (l *lifecycle) Updated(obj *v3.PodSecurityPolicyTemplate) (*v3.PodSecurityPolicyTemplate, error) {
+func (l *lifecycle) Updated(obj *v3.PodSecurityPolicyTemplate) (runtime.Object, error) {
 	return obj, nil
 }
 
-func (l *lifecycle) Remove(obj *v3.PodSecurityPolicyTemplate) (*v3.PodSecurityPolicyTemplate, error) {
+func (l *lifecycle) Remove(obj *v3.PodSecurityPolicyTemplate) (runtime.Object, error) {
 	psptpbs, err := l.psptpbIndexer.ByIndex(psptpbByPSPTNameIndex, obj.Name)
 	if err != nil {
 		return nil, fmt.Errorf("error getting psptpbs: %v", err)
@@ -51,7 +54,7 @@ func (l *lifecycle) Remove(obj *v3.PodSecurityPolicyTemplate) (*v3.PodSecurityPo
 
 	for _, rawPSPTPB := range psptpbs {
 		psptpb := rawPSPTPB.(*v3.PodSecurityPolicyTemplateProjectBinding)
-		err := l.psptpbs.Delete(psptpb.Name, &v1.DeleteOptions{})
+		err := l.psptpbs.DeleteNamespaced(psptpb.Namespace, psptpb.Name, &v1.DeleteOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("error deleting psptpb: %v", err)
 		}

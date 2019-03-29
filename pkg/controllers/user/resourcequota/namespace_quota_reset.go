@@ -6,6 +6,7 @@ import (
 	"github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientcache "k8s.io/client-go/tools/cache"
 )
 
@@ -18,17 +19,17 @@ type quotaResetController struct {
 	nsIndexer  clientcache.Indexer
 }
 
-func (c *quotaResetController) resetNamespaceQuota(key string, project *v3.Project) error {
+func (c *quotaResetController) resetNamespaceQuota(key string, project *v3.Project) (runtime.Object, error) {
 	if project == nil || project.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 	if project.Spec.ResourceQuota != nil {
-		return nil
+		return nil, nil
 	}
 	projectID := fmt.Sprintf("%s:%s", project.Namespace, project.Name)
 	namespaces, err := c.nsIndexer.ByIndex(nsByProjectIndex, projectID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, n := range namespaces {
 		ns := n.(*corev1.Namespace)
@@ -39,9 +40,9 @@ func (c *quotaResetController) resetNamespaceQuota(key string, project *v3.Proje
 		toUpdate := ns.DeepCopy()
 		delete(toUpdate.Annotations, resourceQuotaAnnotation)
 		if _, err := c.namespaces.Update(toUpdate); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return nil, nil
 }

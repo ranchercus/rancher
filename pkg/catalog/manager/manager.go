@@ -1,23 +1,14 @@
 package manager
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"path"
-	"strings"
 	"time"
 
-	"github.com/docker/docker/pkg/locker"
-	"github.com/pkg/errors"
-	"github.com/rancher/rancher/pkg/catalog/git"
-	"github.com/rancher/rancher/pkg/catalog/helm"
-	"github.com/rancher/rancher/pkg/settings"
+	helmlib "github.com/rancher/rancher/pkg/catalog/helm"
+	"github.com/rancher/rancher/pkg/controllers/user/helm/common"
+	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
+	projectv3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config"
 	"github.com/sirupsen/logrus"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,209 +16,163 @@ import (
 )
 
 type Manager struct {
-	cacheRoot             string
-	httpClient            http.Client
-	uuid                  string
 	catalogClient         v3.CatalogInterface
-	templateClient        v3.TemplateInterface
-	templateVersionClient v3.TemplateVersionInterface
+	CatalogLister         v3.CatalogLister
+	templateClient        v3.CatalogTemplateInterface
 	templateContentClient v3.TemplateContentInterface
-	templateLister        v3.TemplateLister
-	templateVersionLister v3.TemplateVersionLister
-	templateContentLister v3.TemplateContentLister
+	templateVersionClient v3.CatalogTemplateVersionInterface
+	templateLister        v3.CatalogTemplateLister
+	templateVersionLister v3.CatalogTemplateVersionLister
+	projectCatalogClient  v3.ProjectCatalogInterface
+	ProjectCatalogLister  v3.ProjectCatalogLister
+	clusterCatalogClient  v3.ClusterCatalogInterface
+	ClusterCatalogLister  v3.ClusterCatalogLister
+	appRevisionClient     projectv3.AppRevisionInterface
 	lastUpdateTime        time.Time
-	lock                  *locker.Locker
 }
 
-func New(management *config.ManagementContext, cacheRoot string) *Manager {
-	uuid := settings.InstallUUID.Get()
+func New(management *config.ManagementContext) *Manager {
 	return &Manager{
-		cacheRoot: cacheRoot,
-		httpClient: http.Client{
-			Timeout: time.Second * 30,
-		},
-		uuid:                  uuid,
 		catalogClient:         management.Management.Catalogs(""),
-		templateClient:        management.Management.Templates(""),
-		templateVersionClient: management.Management.TemplateVersions(""),
+		CatalogLister:         management.Management.Catalogs("").Controller().Lister(),
+		templateClient:        management.Management.CatalogTemplates(""),
 		templateContentClient: management.Management.TemplateContents(""),
-		templateLister:        management.Management.Templates("").Controller().Lister(),
-		templateVersionLister: management.Management.TemplateVersions("").Controller().Lister(),
-		templateContentLister: management.Management.TemplateContents("").Controller().Lister(),
-		lock:                  locker.New(),
+		templateVersionClient: management.Management.CatalogTemplateVersions(""),
+		templateLister:        management.Management.CatalogTemplates("").Controller().Lister(),
+		templateVersionLister: management.Management.CatalogTemplateVersions("").Controller().Lister(),
+		projectCatalogClient:  management.Management.ProjectCatalogs(""),
+		ProjectCatalogLister:  management.Management.ProjectCatalogs("").Controller().Lister(),
+		clusterCatalogClient:  management.Management.ClusterCatalogs(""),
+		ClusterCatalogLister:  management.Management.ClusterCatalogs("").Controller().Lister(),
+		appRevisionClient:     management.Project.AppRevisions(""),
 	}
 }
 
-func (m *Manager) GetCatalogs() ([]v3.Catalog, error) {
-	list, err := m.catalogClient.List(metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
-}
-
-func (m *Manager) prepareRepoPath(catalog v3.Catalog) (path string, commit string, err error) {
-	if git.IsValid(catalog.Spec.URL) {
-		path, commit, err = m.prepareGitRepoPath(catalog)
-	} else {
-		path, commit, err = m.prepareHelmRepoPath(catalog)
-	}
-	return
-}
-
-func (m *Manager) prepareHelmRepoPath(catalog v3.Catalog) (string, string, error) {
-	index, err := helm.DownloadIndex(catalog.Spec.URL)
-	if err != nil {
-		return "", "", err
-	}
-
-	repoPath := path.Join(m.cacheRoot, catalog.Name, index.Hash)
-	if err := os.MkdirAll(repoPath, 0755); err != nil {
-		return "", "", err
-	}
-
-	if err := helm.SaveIndex(index, repoPath); err != nil {
-		return "", "", err
-	}
-
-	return repoPath, index.Hash, nil
-}
-
-func hash(content string) string {
-	sum := md5.Sum([]byte(content))
-	return hex.EncodeToString(sum[:])
-}
-
-func (m *Manager) prepareGitRepoPath(catalog v3.Catalog) (string, string, error) {
-	branch := catalog.Spec.Branch
-	if branch == "" {
-		branch = "master"
-	}
-
-	repoBranchHash := hash(catalog.Spec.URL + branch)
-	repoPath := path.Join(m.cacheRoot, repoBranchHash)
-
-	// add a lock to prevent two sync running on the same hash repo
-	m.lock.Lock(repoBranchHash)
-	defer m.lock.Unlock(repoBranchHash)
-
-	if err := os.MkdirAll(repoPath, 0755); err != nil {
-		return "", "", err
-	}
-
-	empty, err := dirEmpty(repoPath)
-	if err != nil {
-		return "", "", errors.Wrap(err, "Empty directory check failed")
-	}
-
-	if empty {
-		if err = git.Clone(repoPath, catalog.Spec.URL, branch); err != nil {
-			return "", "", errors.Wrap(err, "Clone failed")
-		}
-	} else {
-		// remove lock file
-		if _, err := os.Stat(path.Join(repoPath, ".git", "index.lock")); err == nil {
-			os.RemoveAll(path.Join(repoPath, ".git", "index.lock"))
-		}
-		changed, err := m.remoteShaChanged(catalog.Spec.URL, catalog.Spec.Branch, catalog.Status.Commit, m.uuid)
-		if err != nil {
-			return "", "", errors.Wrap(err, "Remote commit check failed")
-		}
-		if changed {
-			if err = git.Update(repoPath, branch); err != nil {
-				return "", "", errors.Wrap(err, "Update failed")
-			}
-			logrus.Debugf("catalog-service: updated catalog '%v'", catalog.Name)
-		}
-	}
-
-	commit, err := git.HeadCommit(repoPath)
-	if err != nil {
-		err = errors.Wrap(err, "Retrieving head commit failed")
-	}
-	return repoPath, commit, err
-}
-
-func formatGitURL(endpoint, branch string) string {
-	formattedURL := ""
-	if u, err := url.Parse(endpoint); err == nil {
-		pathParts := strings.Split(u.Path, "/")
-		switch strings.Split(u.Host, ":")[0] {
-		case "github.com":
-			if len(pathParts) >= 3 {
-				org := pathParts[1]
-				repo := strings.TrimSuffix(pathParts[2], ".git")
-				formattedURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", org, repo, branch)
-			}
-		case "git.rancher.io":
-			repo := strings.TrimSuffix(pathParts[1], ".git")
-			u.Path = fmt.Sprintf("/repos/%s/commits/%s", repo, branch)
-			formattedURL = u.String()
-		}
-	}
-	return formattedURL
-}
-
-func (m *Manager) remoteShaChanged(repoURL, branch, sha, uuid string) (bool, error) {
-	formattedURL := formatGitURL(repoURL, branch)
-
-	if formattedURL == "" {
-		return true, nil
-	}
-
-	req, err := http.NewRequest("GET", formattedURL, nil)
-	if err != nil {
-		logrus.Warnf("Problem creating request to check git remote sha of repo [%v]: %v", repoURL, err)
-		return true, nil
-	}
-	req.Header.Set("Accept", "application/vnd.github.chitauri-preview+sha")
-	req.Header.Set("If-None-Match", fmt.Sprintf("\"%s\"", sha))
-	if uuid != "" {
-		req.Header.Set("X-Install-Uuid", uuid)
-	}
-	res, err := m.httpClient.Do(req)
-	if err != nil {
-		// Return timeout errors so caller can decide whether or not to proceed with updating the repo
-		if uErr, ok := err.(*url.Error); ok && uErr.Timeout() {
-			return false, errors.Wrapf(uErr, "Repo [%v] is not accessible", repoURL)
-		}
-		return true, nil
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode == 304 {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-func (m *Manager) deleteChart(toDelete string) error {
-	toDeleteTvs, err := m.getTemplateVersion(toDelete)
+func (m *Manager) deleteChart(toDelete string, namespace string) error {
+	toDeleteTvs, err := m.getTemplateVersion(toDelete, namespace)
 	if err != nil {
 		return err
 	}
 	for tv := range toDeleteTvs {
-		if err := m.templateVersionClient.Delete(tv, &metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+		if err := m.templateVersionClient.DeleteNamespaced(namespace, tv, &metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 			return err
 		}
 	}
-	if err := m.templateClient.Delete(toDelete, &metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
+	if err := m.templateClient.DeleteNamespaced(namespace, toDelete, &metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return err
 	}
 	return nil
 }
 
-func dirEmpty(dir string) (bool, error) {
-	f, err := os.Open(dir)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
+func getKey(namespace, name string) string {
+	return fmt.Sprintf("%s/%s", namespace, name)
+}
 
-	_, err = f.Readdirnames(1)
-	if err == io.EOF {
-		return true, nil
+func (m *Manager) DeleteOldTemplateContent() bool {
+	// Template content is not used, remove old contents
+	if err := m.templateContentClient.DeleteCollection(&metav1.DeleteOptions{}, metav1.ListOptions{}); err != nil {
+		logrus.Warnf("Catalog-manager error deleting old template content: %s", err)
+		return false
 	}
-	return false, err
+	return true
+}
+
+func (m *Manager) DeleteBadCatalogTemplates() bool {
+	// Orphaned catalog templates and template versions may exist, remove any where the catalog does not exist
+	errs := m.deleteBadCatalogTemplates()
+	if len(errs) == 0 {
+		return true
+	}
+	for _, err := range errs {
+		logrus.Errorf("Catalog-manager error deleting bad catalog templates: %s", err)
+	}
+	return false
+}
+
+func (m *Manager) deleteBadCatalogTemplates() []error {
+	templates, err := m.templateClient.List(metav1.ListOptions{})
+	if err != nil {
+		return []error{err}
+	}
+
+	templateVersions, err := m.templateVersionClient.List(metav1.ListOptions{})
+	if err != nil {
+		return []error{err}
+	}
+
+	var hasCatalog = map[string]bool{}
+
+	catalogs, err := m.catalogClient.List(metav1.ListOptions{})
+	if err != nil {
+		return []error{err}
+	}
+	for _, catalog := range catalogs.Items {
+		hasCatalog[getKey(namespace.GlobalNamespace, catalog.Name)] = true
+	}
+
+	clusterCatalogs, err := m.clusterCatalogClient.List(metav1.ListOptions{})
+	if err != nil {
+		return []error{err}
+	}
+	for _, clusterCatalog := range clusterCatalogs.Items {
+		hasCatalog[getKey(clusterCatalog.Namespace, clusterCatalog.Name)] = true
+	}
+
+	projectCatalogs, err := m.projectCatalogClient.List(metav1.ListOptions{})
+	if err != nil {
+		return []error{err}
+	}
+	for _, projectCatalog := range projectCatalogs.Items {
+		hasCatalog[getKey(projectCatalog.Namespace, projectCatalog.Name)] = true
+	}
+
+	var (
+		deleteCount int
+		errs        []error
+	)
+
+	for _, template := range templates.Items {
+		var catalogName string
+		if template.Spec.CatalogID != "" {
+			catalogName = template.Spec.CatalogID
+		} else if template.Spec.ClusterCatalogID != "" {
+			catalogName = template.Spec.ClusterCatalogID
+		} else if template.Spec.ProjectCatalogID != "" {
+			catalogName = template.Spec.ProjectCatalogID
+		}
+
+		ns, name := helmlib.SplitNamespaceAndName(catalogName)
+		if ns == "" {
+			ns = namespace.GlobalNamespace
+		}
+		if !hasCatalog[getKey(ns, name)] {
+			if err := m.templateClient.DeleteNamespaced(template.Namespace, template.Name, &metav1.DeleteOptions{}); err != nil {
+				errs = append(errs, err)
+			}
+			deleteCount++
+		}
+	}
+
+	for _, templateVersion := range templateVersions.Items {
+		ns, name, _, _, _, err := common.SplitExternalID(templateVersion.Spec.ExternalID)
+		if err != nil {
+			logrus.Errorf("Catalog-manager error extracting namespace/name from template version: %s", err)
+			continue
+		}
+		if ns == "" {
+			ns = namespace.GlobalNamespace
+		}
+		if !hasCatalog[getKey(ns, name)] {
+			if err := m.templateVersionClient.DeleteNamespaced(templateVersion.Namespace, templateVersion.Name, &metav1.DeleteOptions{}); err != nil {
+				errs = append(errs, err)
+			}
+			deleteCount++
+		}
+	}
+
+	if deleteCount > 0 {
+		logrus.Infof("Catalog-manager deleted %d orphaned catalog template entries", deleteCount)
+	}
+
+	return errs
 }

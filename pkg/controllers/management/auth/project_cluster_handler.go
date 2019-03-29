@@ -12,10 +12,12 @@ import (
 	"github.com/rancher/rancher/pkg/project"
 	corev1 "github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
+	rrbacv1 "github.com/rancher/types/apis/rbac.authorization.k8s.io/v1"
 	"github.com/rancher/types/config"
 	"github.com/sirupsen/logrus"
 	v12 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -51,6 +53,7 @@ func newPandCLifecycles(management *config.ManagementContext) (*projectLifecycle
 		crtbLister:         management.Management.ClusterRoleTemplateBindings("").Controller().Lister(),
 		projectLister:      management.Management.Projects("").Controller().Lister(),
 		roleTemplateLister: management.Management.RoleTemplates("").Controller().Lister(),
+		clusterRoleClient:  management.RBAC.ClusterRoles(""),
 	}
 	p := &projectLifecycle{
 		mgr: m,
@@ -65,21 +68,21 @@ type projectLifecycle struct {
 	mgr *mgr
 }
 
-func (l *projectLifecycle) sync(key string, orig *v3.Project) error {
+func (l *projectLifecycle) sync(key string, orig *v3.Project) (runtime.Object, error) {
 	if orig == nil {
-		return nil
+		return nil, nil
 	}
 
 	obj := orig.DeepCopyObject()
 
 	obj, err := l.mgr.reconcileResourceToNamespace(obj, projectCreateController)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	obj, err = l.mgr.reconcileCreatorRTB(obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// update if it has changed
@@ -87,24 +90,27 @@ func (l *projectLifecycle) sync(key string, orig *v3.Project) error {
 		logrus.Infof("[%v] Updating project %v", projectCreateController, orig.Name)
 		_, err = l.mgr.mgmt.Management.Projects("").ObjectClient().Update(orig.Name, obj)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
+	if err != nil && !kerrors.IsAlreadyExists(err) {
+		return nil, err
+	}
 
-	return nil
+	return nil, nil
 }
 
-func (l *projectLifecycle) Create(obj *v3.Project) (*v3.Project, error) {
+func (l *projectLifecycle) Create(obj *v3.Project) (runtime.Object, error) {
 	// no-op because the sync function will take care of it
 	return obj, nil
 }
 
-func (l *projectLifecycle) Updated(obj *v3.Project) (*v3.Project, error) {
+func (l *projectLifecycle) Updated(obj *v3.Project) (runtime.Object, error) {
 	// no-op because the sync function will take care of it
 	return obj, nil
 }
 
-func (l *projectLifecycle) Remove(obj *v3.Project) (*v3.Project, error) {
+func (l *projectLifecycle) Remove(obj *v3.Project) (runtime.Object, error) {
 	err := l.mgr.deleteNamespace(obj, projectRemoveController)
 	return obj, err
 }
@@ -113,29 +119,29 @@ type clusterLifecycle struct {
 	mgr *mgr
 }
 
-func (l *clusterLifecycle) sync(key string, orig *v3.Cluster) error {
+func (l *clusterLifecycle) sync(key string, orig *v3.Cluster) (runtime.Object, error) {
 	if orig == nil {
-		return nil
+		return nil, nil
 	}
 
 	obj := orig.DeepCopyObject()
 	obj, err := l.mgr.reconcileResourceToNamespace(obj, clusterCreateController)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	obj, err = l.mgr.createDefaultProject(obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	obj, err = l.mgr.createSystemProject(obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	obj, err = l.mgr.addRTAnnotation(obj, "cluster")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// update if it has changed
@@ -143,13 +149,13 @@ func (l *clusterLifecycle) sync(key string, orig *v3.Cluster) error {
 		logrus.Infof("[%v] Updating cluster %v", clusterCreateController, orig.Name)
 		_, err = l.mgr.mgmt.Management.Clusters("").ObjectClient().Update(orig.Name, obj)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	obj, err = l.mgr.reconcileCreatorRTB(obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// update if it has changed
@@ -157,24 +163,24 @@ func (l *clusterLifecycle) sync(key string, orig *v3.Cluster) error {
 		logrus.Infof("[%v] Updating cluster %v", clusterCreateController, orig.Name)
 		_, err = l.mgr.mgmt.Management.Clusters("").ObjectClient().Update(orig.Name, obj)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
-func (l *clusterLifecycle) Create(obj *v3.Cluster) (*v3.Cluster, error) {
+func (l *clusterLifecycle) Create(obj *v3.Cluster) (runtime.Object, error) {
 	// no-op because the sync function will take care of it
 	return obj, nil
 }
 
-func (l *clusterLifecycle) Updated(obj *v3.Cluster) (*v3.Cluster, error) {
+func (l *clusterLifecycle) Updated(obj *v3.Cluster) (runtime.Object, error) {
 	// no-op because the sync function will take care of it
 	return obj, nil
 }
 
-func (l *clusterLifecycle) Remove(obj *v3.Cluster) (*v3.Cluster, error) {
+func (l *clusterLifecycle) Remove(obj *v3.Cluster) (runtime.Object, error) {
 	err := l.mgr.deleteNamespace(obj, clusterRemoveController)
 	return obj, err
 }
@@ -187,6 +193,7 @@ type mgr struct {
 	prtbLister         v3.ProjectRoleTemplateBindingLister
 	crtbLister         v3.ClusterRoleTemplateBindingLister
 	roleTemplateLister v3.RoleTemplateLister
+	clusterRoleClient  rrbacv1.ClusterRoleInterface
 }
 
 func (m *mgr) createDefaultProject(obj runtime.Object) (runtime.Object, error) {

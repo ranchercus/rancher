@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/api/handler"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
@@ -69,6 +71,14 @@ func (ap *azureProvider) testAndApply(actionName string, action *types.Action, r
 		Code: azureADConfigApplyInput.Code,
 	}
 
+	if azureADConfig.ApplicationSecret != "" {
+		value, err := common.ReadFromSecret(ap.secrets, azureADConfig.ApplicationSecret,
+			strings.ToLower(auth.TypeToField[client.AzureADConfigType]))
+		if err != nil {
+			return err
+		}
+		azureADConfig.ApplicationSecret = value
+	}
 	//Call provider
 	userPrincipal, groupPrincipals, providerToken, err := ap.loginUser(azureLogin, &azureADConfig, true)
 	if err != nil {

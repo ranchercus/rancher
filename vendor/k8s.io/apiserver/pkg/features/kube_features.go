@@ -52,19 +52,6 @@ const (
 	// audited.
 	AdvancedAuditing utilfeature.Feature = "AdvancedAuditing"
 
-	// owner: @ilackams
-	// alpha: v1.7
-	//
-	// Enables compression of REST responses (GET and LIST only)
-	APIResponseCompression utilfeature.Feature = "APIResponseCompression"
-
-	// owner: @smarterclayton
-	// alpha: v1.7
-	//
-	// Allow asynchronous coordination of object creation.
-	// Auto-enabled by the Initializers admission plugin.
-	Initializers utilfeature.Feature = "Initializers"
-
 	// owner: @smarterclayton
 	// alpha: v1.8
 	// beta: v1.9
@@ -72,14 +59,6 @@ const (
 	// Allow API clients to retrieve resource lists in chunks rather than
 	// all at once.
 	APIListChunking utilfeature.Feature = "APIListChunking"
-
-	// owner: @apelisse
-	// alpha: v1.12
-	//
-	// Allow requests to be processed but not stored, so that
-	// validation, merging, mutation can be tested without
-	// committing.
-	DryRun utilfeature.Feature = "DryRun"
 )
 
 func init() {
@@ -93,8 +72,5 @@ var defaultKubernetesFeatureGates = map[utilfeature.Feature]utilfeature.FeatureS
 	StreamingProxyRedirects: {Default: true, PreRelease: utilfeature.Beta},
 	ValidateProxyRedirects:  {Default: false, PreRelease: utilfeature.Alpha},
 	AdvancedAuditing:        {Default: true, PreRelease: utilfeature.GA},
-	APIResponseCompression:  {Default: false, PreRelease: utilfeature.Alpha},
-	Initializers:            {Default: false, PreRelease: utilfeature.Alpha},
 	APIListChunking:         {Default: true, PreRelease: utilfeature.Beta},
-	DryRun:                  {Default: false, PreRelease: utilfeature.Alpha},
 }

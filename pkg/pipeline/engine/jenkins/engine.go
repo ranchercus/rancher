@@ -1,21 +1,25 @@
 package jenkins
 
 import (
-	"encoding/xml"
-	"fmt"
-	"github.com/rancher/rancher/pkg/settings"
-	"k8s.io/client-go/tools/cache"
-
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types/convert"
+	"github.com/rancher/rancher/pkg/pipeline/providers"
+	"github.com/rancher/rancher/pkg/pipeline/remote"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/types/apis/apps/v1beta2"
 	"github.com/rancher/types/apis/core/v1"
-	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config/dialer"
 	"github.com/sirupsen/logrus"
@@ -23,14 +27,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"net/http"
-	"regexp"
-	"strconv"
-	"strings"
-	"time"
+)
+
+var (
+	stepNameRe = regexp.MustCompile(`step-\d+-\d+`)
 )
 
 type Engine struct {
+	// UseCache affects resources that is not cached in follower instances of HA mode
+	UseCache         bool
 	JenkinsClient    *Client
 	HTTPClient       *http.Client
 	ServiceLister    v1.ServiceLister
@@ -40,17 +45,17 @@ type Engine struct {
 	Secrets                    v1.SecretInterface
 	SecretLister               v1.SecretLister
 	ManagementSecretLister     v1.SecretLister
+	SourceCodeCredentials      v3.SourceCodeCredentialInterface
 	SourceCodeCredentialLister v3.SourceCodeCredentialLister
 	PipelineLister             v3.PipelineLister
+	PipelineSettingLister      v3.PipelineSettingLister
 
-	ClusterName  string
-	Dialer       dialer.Factory
-	TokenIndexer cache.Indexer
-	UserLister   mv3.UserLister
+	ClusterName string
+	Dialer      dialer.Factory
 }
 
 func (j *Engine) getJenkinsURL(execution *v3.PipelineExecution) (string, error) {
-	ns := utils.GetPipelineCommonName(execution)
+	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
 	service, err := j.ServiceLister.Get(ns, utils.JenkinsName)
 	if err != nil {
 		return "", err
@@ -64,7 +69,7 @@ func (j *Engine) PreCheck(execution *v3.PipelineExecution) (bool, error) {
 	var pod *corev1.Pod
 	var err error
 	set := labels.Set(map[string]string{utils.LabelKeyApp: utils.JenkinsName})
-	ns := utils.GetPipelineCommonName(execution)
+	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
 	pods, err := j.PodLister.List(ns, set.AsSelector())
 	if err != nil {
 		return false, err
@@ -89,8 +94,13 @@ func (j *Engine) getJenkinsClient(execution *v3.PipelineExecution) (*Client, err
 		return nil, err
 	}
 	user := utils.PipelineSecretDefaultUser
-	ns := utils.GetPipelineCommonName(execution)
-	secret, err := j.SecretLister.Get(ns, utils.PipelineSecretName)
+	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
+	var secret *corev1.Secret
+	if j.UseCache {
+		secret, err = j.SecretLister.Get(ns, utils.PipelineSecretName)
+	} else {
+		secret, err = j.Secrets.GetNamespaced(ns, utils.PipelineSecretName, metav1.GetOptions{})
+	}
 	if err != nil || secret.Data == nil {
 		return nil, fmt.Errorf("error get jenkins token - %v", err)
 	}
@@ -160,14 +170,8 @@ func (j *Engine) preparePipeline(execution *v3.PipelineExecution) error {
 					_, projectID := ref.Parse(execution.Spec.ProjectName)
 					registry = fmt.Sprintf("%s.%s-pipeline", utils.LocalRegistry, projectID)
 				}
-				if registry == settings.DefaultPipelineRegistry.Get() {
-					if err := j.prepareRegistryCredentialForCurrentUser(execution, registry); err != nil {
-						return err
-					}
-				} else {
-					if err := j.prepareRegistryCredential(execution, registry); err != nil {
-						return err
-					}
+				if err := j.prepareRegistryCredential(execution, registry); err != nil {
+					return err
 				}
 			}
 		}
@@ -210,7 +214,7 @@ func (j *Engine) prepareRegistryCredential(execution *v3.PipelineExecution, regi
 
 	secretName := fmt.Sprintf("%s-%s", execution.Namespace, proceccedRegistry)
 	logrus.Debugf("preparing registry credential %s for %s", secretName, registry)
-	ns := utils.GetPipelineCommonName(execution)
+	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
@@ -231,60 +235,13 @@ func (j *Engine) prepareRegistryCredential(execution *v3.PipelineExecution, regi
 	return err
 }
 
-func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineExecution, registry string) error {
-	//registry1 := settings.DefaultPipelineRegistry.Get()
-	username := execution.Spec.TriggerUserName
-	objs, err := j.TokenIndexer.ByIndex("authn.management.cattle.io/uid-key-index", username)
-	if err != nil {
-		return err
-	}
-	if len(objs) == 0 {
-		return fmt.Errorf("failed to retrieve auth token from cache")
-	}
-	var storedToken *mv3.Token
-	isExpired := true
-	for _, obj := range objs {
-		storedToken = obj.(*mv3.Token)
-		if !storedToken.Expired {
-			isExpired = false
-			break
-		}
-	}
-	if isExpired {
-		return fmt.Errorf("must authenticate")
-	}
-	user, err := j.UserLister.Get("", storedToken.UserID)
-	if err != nil {
-		return err
-	}
-	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
-	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
-
-	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)
-	ns := utils.GetPipelineCommonName(execution)
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns,
-			Name:      secretName,
-		},
-		Data: map[string][]byte{
-			utils.PublishSecretUserKey: []byte(user.Username),
-			utils.PublishSecretPwKey:   []byte(fmt.Sprintf("%s:%s", storedToken.Name, storedToken.Token)),
-		},
-	}
-	_, err = j.Secrets.Create(secret)
-	if apierrors.IsAlreadyExists(err) {
-		if _, err := j.Secrets.Update(secret); err != nil {
-			return err
-		}
-		return nil
-	}
-	return err
-}
-
 func (j *Engine) createPipelineJob(client *Client, execution *v3.PipelineExecution) error {
 	logrus.Debug("create jenkins job for pipeline")
-	jobconf, err := ConvertPipelineExecutionToJenkinsPipeline(execution)
+	converter, err := initJenkinsPipelineConverter(execution, j.PipelineSettingLister, j.SecretLister)
+	if err != nil {
+		return err
+	}
+	jobconf, err := converter.convertPipelineExecutionToJenkinsPipeline()
 	if err != nil {
 		return err
 	}
@@ -295,7 +252,11 @@ func (j *Engine) createPipelineJob(client *Client, execution *v3.PipelineExecuti
 
 func (j *Engine) updatePipelineJob(client *Client, execution *v3.PipelineExecution) error {
 	logrus.Debug("update jenkins job for pipeline")
-	jobconf, err := ConvertPipelineExecutionToJenkinsPipeline(execution)
+	converter, err := initJenkinsPipelineConverter(execution, j.PipelineSettingLister, j.SecretLister)
+	if err != nil {
+		return err
+	}
+	jobconf, err := converter.convertPipelineExecutionToJenkinsPipeline()
 	if err != nil {
 		return err
 	}
@@ -378,8 +339,8 @@ func (j *Engine) SyncExecution(execution *v3.PipelineExecution) (bool, error) {
 	}
 	for _, jenkinsStage := range info.Stages {
 		//handle those in step-1-1 format
-		parts := strings.Split(jenkinsStage.Name, "-")
-		if len(parts) == 3 {
+		if stepNameRe.MatchString(jenkinsStage.Name) {
+			parts := strings.Split(jenkinsStage.Name, "-")
 			stage, err := strconv.Atoi(parts[1])
 			if err != nil {
 				return false, err
@@ -673,7 +634,7 @@ func (j Engine) setCredential(client *Client, execution *v3.PipelineExecution, c
 		return nil
 	}
 	ns, name := ref.Parse(credentialID)
-	souceCodeCredential, err := j.SourceCodeCredentialLister.Get(ns, name)
+	credential, err := j.SourceCodeCredentialLister.Get(ns, name)
 	if err != nil {
 		return err
 	}
@@ -687,8 +648,26 @@ func (j Engine) setCredential(client *Client, execution *v3.PipelineExecution, c
 	jenkinsCred.Scope = "GLOBAL"
 	jenkinsCred.ID = execution.Name
 
-	jenkinsCred.Username = souceCodeCredential.Spec.GitLoginName
-	jenkinsCred.Password = souceCodeCredential.Spec.AccessToken
+	_, projID := ref.Parse(execution.Spec.ProjectName)
+	scpConfig, err := providers.GetSourceCodeProviderConfig(credential.Spec.SourceCodeType, projID)
+	if err != nil {
+		return err
+	}
+	remote, err := remote.New(scpConfig)
+	if err != nil {
+		return err
+	}
+
+	jenkinsCred.Username = credential.Spec.GitLoginName
+	jenkinsCred.Password = credential.Spec.AccessToken
+	if credential.Spec.GitCloneToken != "" {
+		jenkinsCred.Password = credential.Spec.GitCloneToken
+	}
+	if accessToken, err := utils.EnsureAccessToken(j.SourceCodeCredentials, remote, credential); err != nil {
+		return err
+	} else if accessToken != credential.Spec.AccessToken {
+		jenkinsCred.Password = accessToken
+	}
 
 	bodyContent := map[string]interface{}{}
 	bodyContent["credentials"] = jenkinsCred

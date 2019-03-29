@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/graphrbac/1.6/graphrbac"
 	"github.com/Azure/go-autorest/autorest/adal"
@@ -12,8 +13,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/tokens"
+	corev1 "github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/management.cattle.io/v3public"
 	"github.com/rancher/types/client/management/v3"
@@ -35,6 +38,7 @@ const (
 type azureProvider struct {
 	ctx         context.Context
 	authConfigs v3.AuthConfigInterface
+	secrets     corev1.SecretInterface
 	userMGR     user.Manager
 	tokenMGR    *tokens.Manager
 }
@@ -49,6 +53,7 @@ func Configure(
 	return &azureProvider{
 		ctx:         ctx,
 		authConfigs: mgmtCtx.Management.AuthConfigs(""),
+		secrets:     mgmtCtx.Core.Secrets(""),
 		userMGR:     userMGR,
 		tokenMGR:    tokenMGR,
 	}
@@ -68,6 +73,44 @@ func (ap *azureProvider) AuthenticateUser(
 	return ap.loginUser(login, nil, false)
 }
 
+func (ap *azureProvider) RefetchGroupPrincipals(principalID string, secret string) ([]v3.Principal, error) {
+	azureClient, err := ap.newAzureClient(secret)
+	if err != nil {
+		return nil, err
+	}
+
+	oid, err := parseJWTforField(azureClient.accessToken(), "oid")
+	if err != nil {
+		return nil, err
+	}
+
+	logrus.Debug("[AZURE_PROVIDER] Started getting user info from AzureAD")
+
+	user, err := azureClient.userClient.Get(context.Background(), oid)
+	if err != nil {
+		return nil, err
+	}
+
+	logrus.Debug("[AZURE_PROVIDER] Completed getting user info from AzureAD")
+
+	var mem bool
+	params := graphrbac.UserGetMemberGroupsParameters{
+		SecurityEnabledOnly: &mem,
+	}
+
+	userGroups, err := azureClient.userClient.GetMemberGroups(context.Background(), *user.ObjectID, params)
+	if err != nil {
+		return nil, err
+	}
+
+	groupPrincipals, err := ap.userGroupsToPrincipals(azureClient, userGroups)
+	if err != nil {
+		return nil, err
+	}
+
+	return groupPrincipals, nil
+}
+
 func (ap *azureProvider) SearchPrincipals(
 	name string,
 	principalType string,
@@ -75,7 +118,12 @@ func (ap *azureProvider) SearchPrincipals(
 ) ([]v3.Principal, error) {
 	var princ []v3.Principal
 
-	client, err := ap.newAzureClient(token)
+	secret, err := ap.tokenMGR.GetSecret(token.UserID, Name, []*v3.Token{&token})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+
+	client, err := ap.newAzureClient(secret)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +163,12 @@ func (ap *azureProvider) GetPrincipal(
 	var princ v3.Principal
 	var err error
 
-	client, err := ap.newAzureClient(token)
+	secret, err := ap.tokenMGR.GetSecret(token.UserID, Name, []*v3.Token{&token})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return princ, err
+	}
+
+	client, err := ap.newAzureClient(secret)
 	if err != nil {
 		return princ, err
 	}
@@ -167,20 +220,28 @@ func (ap *azureProvider) loginUser(
 		}
 	}
 
+	logrus.Debug("[AZURE_PROVIDER] Started token swap with AzureAD")
+
 	azureClient, err := newClientCode(azureCredential.Code, config)
 	if err != nil {
 		return v3.Principal{}, nil, "", err
 	}
+
+	logrus.Debug("[AZURE_PROVIDER] Completed token swap with AzureAD")
 
 	oid, err := parseJWTforField(azureClient.accessToken(), "oid")
 	if err != nil {
 		return v3.Principal{}, nil, "", err
 	}
 
+	logrus.Debug("[AZURE_PROVIDER] Started getting user info from AzureAD")
+
 	user, err := azureClient.userClient.Get(context.Background(), oid)
 	if err != nil {
 		return v3.Principal{}, nil, "", err
 	}
+
+	logrus.Debug("[AZURE_PROVIDER] Completed getting user info from AzureAD")
 
 	userPrincipal := ap.userToPrincipal(user)
 	userPrincipal.Me = true
@@ -205,7 +266,7 @@ func (ap *azureProvider) loginUser(
 		testAllowedPrincipals = append(testAllowedPrincipals, userPrincipal.Name)
 	}
 
-	allowed, err := ap.userMGR.CheckAccess(config.AccessMode, testAllowedPrincipals, userPrincipal, groupPrincipals)
+	allowed, err := ap.userMGR.CheckAccess(config.AccessMode, testAllowedPrincipals, userPrincipal.Name, groupPrincipals)
 	if err != nil {
 		return v3.Principal{}, nil, "", err
 	}
@@ -277,18 +338,18 @@ func (ap *azureProvider) searchGroups(client *azureClient, name string, token v3
 	return principals, nil
 }
 
-func (ap *azureProvider) newAzureClient(token v3.Token) (*azureClient, error) {
+func (ap *azureProvider) newAzureClient(secret string) (*azureClient, error) {
 	config, err := ap.getAzureConfigK8s()
 	if err != nil {
 		return nil, err
 	}
 
-	azureToken, err := ap.getAzureToken(&token)
+	azureToken, err := ap.getAzureToken(secret)
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := newClientToken(token, config, azureToken)
+	client, err := newClientToken(config, azureToken)
 	if err != nil {
 		return nil, err
 	}
@@ -304,6 +365,13 @@ func (ap *azureProvider) saveAzureConfigK8s(config *v3.AzureADConfig) error {
 	config.Kind = v3.AuthConfigGroupVersionKind.Kind
 	config.Type = client.AzureADConfigType
 	config.ObjectMeta = storedAzureConfig.ObjectMeta
+
+	field := strings.ToLower(auth.TypeToField[config.Type])
+	if err := common.CreateOrUpdateSecrets(ap.secrets, config.ApplicationSecret, field, strings.ToLower(config.Type)); err != nil {
+		return err
+	}
+
+	config.ApplicationSecret = common.GetName(config.Type, field)
 
 	logrus.Debugf("updating AzureADConfig")
 	_, err = ap.authConfigs.ObjectClient().Update(config.ObjectMeta.Name, config)
@@ -337,6 +405,15 @@ func (ap *azureProvider) getAzureConfigK8s() (*v3.AzureADConfig, error) {
 	mapstructure.Decode(metadataMap, objectMeta)
 	storedAzureADConfig.ObjectMeta = *objectMeta
 
+	if storedAzureADConfig.ApplicationSecret != "" {
+		value, err := common.ReadFromSecret(ap.secrets, storedAzureADConfig.ApplicationSecret,
+			strings.ToLower(auth.TypeToField[client.AzureADConfigType]))
+		if err != nil {
+			return nil, err
+		}
+		storedAzureADConfig.ApplicationSecret = value
+	}
+
 	return storedAzureADConfig, nil
 }
 
@@ -355,6 +432,8 @@ func (ap *azureProvider) userGroupsToPrincipals(
 	azureClient *azureClient,
 	groups graphrbac.UserGetMemberGroupsResult,
 ) ([]v3.Principal, error) {
+	start := time.Now()
+	logrus.Debug("[AZURE_PROVIDER] Started gathering users groups")
 	var g errgroup.Group
 	groupPrincipals := make([]v3.Principal, len(*groups.Value))
 	for i, group := range *groups.Value {
@@ -363,6 +442,7 @@ func (ap *azureProvider) userGroupsToPrincipals(
 		g.Go(func() error {
 			groupObj, err := azureClient.groupClient.Get(context.Background(), gp)
 			if err != nil {
+				logrus.Debugf("[AZURE_PROVIDER] Error getting group: %v", err)
 				return err
 			}
 
@@ -375,6 +455,7 @@ func (ap *azureProvider) userGroupsToPrincipals(
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+	logrus.Debugf("[AZURE_PROVIDER] Completed gathering users groups, took %v", time.Now().Sub(start))
 	return groupPrincipals, nil
 }
 
@@ -388,16 +469,9 @@ func (ap *azureProvider) groupToPrincipal(group graphrbac.ADGroup) v3.Principal 
 	return p
 }
 
-func (ap *azureProvider) getAzureToken(token *v3.Token) (adal.Token, error) {
+func (ap *azureProvider) getAzureToken(secret string) (adal.Token, error) {
 	var azureToken adal.Token
-	secret, err := ap.tokenMGR.GetSecret(token)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return azureToken, err
-		}
-		secret = token.ProviderInfo["access_token"]
-	}
-	err = json.Unmarshal([]byte(secret), &azureToken)
+	err := json.Unmarshal([]byte(secret), &azureToken)
 	if err != nil {
 		return azureToken, err
 	}
@@ -413,7 +487,7 @@ func (ap *azureProvider) updateToken(client *azureClient, token *v3.Token) error
 	}
 	stringNew := string(new)
 
-	secret, err := ap.tokenMGR.GetSecret(token)
+	secret, err := ap.tokenMGR.GetSecret(token.UserID, token.AuthProvider, []*v3.Token{token})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// providerToken doesn't exists as a secret, update on token
@@ -472,4 +546,17 @@ func samePrincipal(me v3.Principal, other v3.Principal) bool {
 		return true
 	}
 	return false
+}
+
+func (ap *azureProvider) CanAccessWithGroupProviders(userPrincipalID string, groupPrincipals []v3.Principal) (bool, error) {
+	config, err := ap.getAzureConfigK8s()
+	if err != nil {
+		logrus.Errorf("Error fetching azure config: %v", err)
+		return false, err
+	}
+	allowed, err := ap.userMGR.CheckAccess(config.AccessMode, config.AllowedPrincipalIDs, userPrincipalID, groupPrincipals)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
 }

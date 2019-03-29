@@ -18,6 +18,7 @@ import (
 	apierror "k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -52,7 +53,7 @@ func RegisterEarly(ctx context.Context, management *config.ManagementContext, ma
 	}
 
 	clusterClient := management.Management.Clusters("")
-	clusterClient.AddLifecycle("cluster-agent-controller-cleanup", lifecycle)
+	clusterClient.AddLifecycle(ctx, "cluster-agent-controller-cleanup", lifecycle)
 }
 
 type ClusterLifecycleCleanup struct {
@@ -60,11 +61,11 @@ type ClusterLifecycleCleanup struct {
 	ctx     context.Context
 }
 
-func (c *ClusterLifecycleCleanup) Create(obj *v3.Cluster) (*v3.Cluster, error) {
+func (c *ClusterLifecycleCleanup) Create(obj *v3.Cluster) (runtime.Object, error) {
 	return nil, nil
 }
 
-func (c *ClusterLifecycleCleanup) Remove(obj *v3.Cluster) (*v3.Cluster, error) {
+func (c *ClusterLifecycleCleanup) Remove(obj *v3.Cluster) (runtime.Object, error) {
 	var err error
 	if obj.Name == "local" && obj.Spec.Internal {
 		err = c.cleanupLocalCluster(obj)
@@ -114,7 +115,7 @@ func (c *ClusterLifecycleCleanup) cleanupLocalCluster(obj *v3.Cluster) error {
 	return nil
 }
 
-func (c *ClusterLifecycleCleanup) Updated(obj *v3.Cluster) (*v3.Cluster, error) {
+func (c *ClusterLifecycleCleanup) Updated(obj *v3.Cluster) (runtime.Object, error) {
 	return nil, nil
 }
 

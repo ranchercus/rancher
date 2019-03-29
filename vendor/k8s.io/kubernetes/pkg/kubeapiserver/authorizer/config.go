@@ -18,14 +18,11 @@ package authorizer
 
 import (
 	"fmt"
-	"time"
 
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
 	"k8s.io/apiserver/pkg/authorization/union"
-	"k8s.io/apiserver/plugin/pkg/authorizer/webhook"
 	versionedinformers "k8s.io/client-go/informers"
-	"k8s.io/kubernetes/pkg/auth/authorizer/abac"
 	"k8s.io/kubernetes/pkg/auth/nodeidentifier"
 	"k8s.io/kubernetes/pkg/kubeapiserver/authorizer/modes"
 	"k8s.io/kubernetes/plugin/pkg/auth/authorizer/node"
@@ -38,17 +35,7 @@ type AuthorizationConfig struct {
 
 	// Options for ModeABAC
 
-	// Path to an ABAC policy file.
-	PolicyFile string
-
 	// Options for ModeWebhook
-
-	// Kubeconfig file for Webhook authorization plugin.
-	WebhookConfigFile string
-	// TTL for caching of authorized responses from the webhook server.
-	WebhookCacheAuthorizedTTL time.Duration
-	// TTL for caching of unauthorized responses from the webhook server.
-	WebhookCacheUnauthorizedTTL time.Duration
 
 	VersionedInformerFactory versionedinformers.SharedInformerFactory
 }
@@ -88,22 +75,6 @@ func (config AuthorizationConfig) New() (authorizer.Authorizer, authorizer.RuleR
 			alwaysDenyAuthorizer := authorizerfactory.NewAlwaysDenyAuthorizer()
 			authorizers = append(authorizers, alwaysDenyAuthorizer)
 			ruleResolvers = append(ruleResolvers, alwaysDenyAuthorizer)
-		case modes.ModeABAC:
-			abacAuthorizer, err := abac.NewFromFile(config.PolicyFile)
-			if err != nil {
-				return nil, nil, err
-			}
-			authorizers = append(authorizers, abacAuthorizer)
-			ruleResolvers = append(ruleResolvers, abacAuthorizer)
-		case modes.ModeWebhook:
-			webhookAuthorizer, err := webhook.New(config.WebhookConfigFile,
-				config.WebhookCacheAuthorizedTTL,
-				config.WebhookCacheUnauthorizedTTL)
-			if err != nil {
-				return nil, nil, err
-			}
-			authorizers = append(authorizers, webhookAuthorizer)
-			ruleResolvers = append(ruleResolvers, webhookAuthorizer)
 		case modes.ModeRBAC:
 			rbacAuthorizer := rbac.New(
 				&rbac.RoleGetter{Lister: config.VersionedInformerFactory.Rbac().V1().Roles().Lister()},

@@ -29,11 +29,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/algorithm"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
 	"k8s.io/kubernetes/pkg/scheduler/core"
-	"k8s.io/kubernetes/pkg/scheduler/core/equivalence"
 	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	"k8s.io/kubernetes/pkg/scheduler/util"
 	"k8s.io/kubernetes/pkg/scheduler/volumebinder"
@@ -110,9 +108,6 @@ type Config struct {
 	// It is expected that changes made via SchedulerCache will be observed
 	// by NodeLister and Algorithm.
 	SchedulerCache schedulercache.Cache
-	// Ecache is used for optimistically invalid affected cache items after
-	// successfully binding a pod
-	Ecache     *equivalence.Cache
 	NodeLister algorithm.NodeLister
 	Algorithm  algorithm.ScheduleAlgorithm
 	GetBinder  func(pod *v1.Pod) Binder
@@ -148,9 +143,6 @@ type Config struct {
 
 	// Disable pod preemption or not.
 	DisablePreemption bool
-
-	// SchedulingQueue holds pods to be scheduled
-	SchedulingQueue core.SchedulingQueue
 }
 
 // NewFromConfigurator returns a new scheduler that is created entirely by the Configurator.  Assumes Create() is implemented.
@@ -202,11 +194,10 @@ func (sched *Scheduler) schedule(pod *v1.Pod) (string, error) {
 		sched.config.Error(pod, err)
 		sched.config.Recorder.Eventf(pod, v1.EventTypeWarning, "FailedScheduling", "%v", err)
 		sched.config.PodConditionUpdater.Update(pod, &v1.PodCondition{
-			Type:          v1.PodScheduled,
-			Status:        v1.ConditionFalse,
-			LastProbeTime: metav1.Now(),
-			Reason:        v1.PodReasonUnschedulable,
-			Message:       err.Error(),
+			Type:    v1.PodScheduled,
+			Status:  v1.ConditionFalse,
+			Reason:  v1.PodReasonUnschedulable,
+			Message: err.Error(),
 		})
 		return "", err
 	}
@@ -237,19 +228,11 @@ func (sched *Scheduler) preempt(preemptor *v1.Pod, scheduleErr error) (string, e
 	var nodeName = ""
 	if node != nil {
 		nodeName = node.Name
-		// Update the scheduling queue with the nominated pod information. Without
-		// this, there would be a race condition between the next scheduling cycle
-		// and the time the scheduler receives a Pod Update for the nominated pod.
-		sched.config.SchedulingQueue.UpdateNominatedPodForNode(preemptor, nodeName)
-
-		// Make a call to update nominated node name of the pod on the API server.
 		err = sched.config.PodPreemptor.SetNominatedNodeName(preemptor, nodeName)
 		if err != nil {
 			glog.Errorf("Error in preemption process. Cannot update pod %v/%v annotations: %v", preemptor.Namespace, preemptor.Name, err)
-			sched.config.SchedulingQueue.DeleteNominatedPodIfExists(preemptor)
 			return "", err
 		}
-
 		for _, victim := range victims {
 			if err := sched.config.PodPreemptor.DeletePod(victim); err != nil {
 				glog.Errorf("Error preempting pod %v/%v: %v", victim.Namespace, victim.Name, err)
@@ -282,18 +265,11 @@ func (sched *Scheduler) assumeVolumes(assumed *v1.Pod, host string) (allBound bo
 			sched.config.Error(assumed, err)
 			sched.config.Recorder.Eventf(assumed, v1.EventTypeWarning, "FailedScheduling", "AssumePodVolumes failed: %v", err)
 			sched.config.PodConditionUpdater.Update(assumed, &v1.PodCondition{
-				Type:          v1.PodScheduled,
-				Status:        v1.ConditionFalse,
-				LastProbeTime: metav1.Now(),
-				Reason:        "SchedulerError",
-				Message:       err.Error(),
+				Type:    v1.PodScheduled,
+				Status:  v1.ConditionFalse,
+				Reason:  "SchedulerError",
+				Message: err.Error(),
 			})
-		}
-		// Invalidate ecache because assumed volumes could have affected the cached
-		// pvs for other pods
-		if sched.config.Ecache != nil {
-			invalidPredicates := sets.NewString(predicates.CheckVolumeBindingPred)
-			sched.config.Ecache.InvalidatePredicates(invalidPredicates)
 		}
 	}
 	return
@@ -323,10 +299,9 @@ func (sched *Scheduler) bindVolumes(assumed *v1.Pod) error {
 		sched.config.Error(assumed, err)
 		sched.config.Recorder.Eventf(assumed, eventType, "FailedScheduling", "%v", err)
 		sched.config.PodConditionUpdater.Update(assumed, &v1.PodCondition{
-			Type:          v1.PodScheduled,
-			Status:        v1.ConditionFalse,
-			LastProbeTime: metav1.Now(),
-			Reason:        reason,
+			Type:   v1.PodScheduled,
+			Status: v1.ConditionFalse,
+			Reason: reason,
 		})
 		return err
 	}
@@ -357,24 +332,12 @@ func (sched *Scheduler) assume(assumed *v1.Pod, host string) error {
 		sched.config.Error(assumed, err)
 		sched.config.Recorder.Eventf(assumed, v1.EventTypeWarning, "FailedScheduling", "AssumePod failed: %v", err)
 		sched.config.PodConditionUpdater.Update(assumed, &v1.PodCondition{
-			Type:          v1.PodScheduled,
-			Status:        v1.ConditionFalse,
-			LastProbeTime: metav1.Now(),
-			Reason:        "SchedulerError",
-			Message:       err.Error(),
+			Type:    v1.PodScheduled,
+			Status:  v1.ConditionFalse,
+			Reason:  "SchedulerError",
+			Message: err.Error(),
 		})
 		return err
-	}
-	// if "assumed" is a nominated pod, we should remove it from internal cache
-	if sched.config.SchedulingQueue != nil {
-		sched.config.SchedulingQueue.DeleteNominatedPodIfExists(assumed)
-	}
-
-	// Optimistically assume that the binding will succeed, so we need to invalidate affected
-	// predicates in equivalence cache.
-	// If the binding fails, these invalidated item will not break anything.
-	if sched.config.Ecache != nil {
-		sched.config.Ecache.InvalidateCachedPredicateItemForPodAdd(assumed, host)
 	}
 	return nil
 }
@@ -397,10 +360,9 @@ func (sched *Scheduler) bind(assumed *v1.Pod, b *v1.Binding) error {
 		sched.config.Error(assumed, err)
 		sched.config.Recorder.Eventf(assumed, v1.EventTypeWarning, "FailedScheduling", "Binding rejected: %v", err)
 		sched.config.PodConditionUpdater.Update(assumed, &v1.PodCondition{
-			Type:          v1.PodScheduled,
-			Status:        v1.ConditionFalse,
-			LastProbeTime: metav1.Now(),
-			Reason:        "BindingRejected",
+			Type:   v1.PodScheduled,
+			Status: v1.ConditionFalse,
+			Reason: "BindingRejected",
 		})
 		return err
 	}

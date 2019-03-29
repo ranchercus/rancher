@@ -1,6 +1,7 @@
 package rbac
 
 import (
+	"context"
 	"reflect"
 	"strings"
 
@@ -36,7 +37,7 @@ const (
 	crbByRoleAndSubjectIndex         = "authz.cluster.cattle.io/crb-by-role-and-subject"
 )
 
-func Register(workload *config.UserContext) {
+func Register(ctx context.Context, workload *config.UserContext) {
 	// Add cache informer to project role template bindings
 	prtbInformer := workload.Management.Management.ProjectRoleTemplateBindings("").Controller().Informer()
 	prtbIndexers := map[string]cache.IndexFunc{
@@ -91,11 +92,11 @@ func Register(workload *config.UserContext) {
 		projectLister: workload.Management.Management.Projects("").Controller().Lister(),
 		clusterName:   workload.ClusterName,
 	}
-	workload.Management.Management.Projects("").AddClusterScopedLifecycle("project-namespace-auth", workload.ClusterName, newProjectLifecycle(r))
-	workload.Management.Management.ProjectRoleTemplateBindings("").AddClusterScopedLifecycle("cluster-prtb-sync", workload.ClusterName, newPRTBLifecycle(r))
-	workload.RBAC.ClusterRoleBindings("").AddHandler("legacy-crb-cleaner-sync", newLegacyCRBCleaner(r).sync)
-	workload.Management.Management.ClusterRoleTemplateBindings("").AddClusterScopedLifecycle("cluster-crtb-sync", workload.ClusterName, newCRTBLifecycle(r))
-	workload.Management.Management.Clusters("").AddHandler("global-admin-cluster-sync", newClusterHandler(workload))
+	workload.Management.Management.Projects("").AddClusterScopedLifecycle(ctx, "project-namespace-auth", workload.ClusterName, newProjectLifecycle(r))
+	workload.Management.Management.ProjectRoleTemplateBindings("").AddClusterScopedLifecycle(ctx, "cluster-prtb-sync", workload.ClusterName, newPRTBLifecycle(r))
+	workload.RBAC.ClusterRoleBindings("").AddHandler(ctx, "legacy-crb-cleaner-sync", newLegacyCRBCleaner(r).sync)
+	workload.Management.Management.ClusterRoleTemplateBindings("").AddClusterScopedLifecycle(ctx, "cluster-crtb-sync", workload.ClusterName, newCRTBLifecycle(r))
+	workload.Management.Management.Clusters("").AddHandler(ctx, "global-admin-cluster-sync", newClusterHandler(workload))
 
 	sync := &resourcequota.SyncController{
 		Namespaces:          workload.Core.Namespaces(""),
@@ -103,9 +104,11 @@ func Register(workload *config.UserContext) {
 		NsIndexer:           nsInformer.GetIndexer(),
 		ResourceQuotas:      workload.Core.ResourceQuotas(""),
 		ResourceQuotaLister: workload.Core.ResourceQuotas("").Controller().Lister(),
+		LimitRange:          workload.Core.LimitRanges(""),
+		LimitRangeLister:    workload.Core.LimitRanges("").Controller().Lister(),
 		ProjectLister:       workload.Management.Management.Projects(workload.ClusterName).Controller().Lister(),
 	}
-	workload.Core.Namespaces("").AddLifecycle("namespace-auth", newNamespaceLifecycle(r, sync))
+	workload.Core.Namespaces("").AddLifecycle(ctx, "namespace-auth", newNamespaceLifecycle(r, sync))
 
 	// This method for creating a lifecycle creates a cluster scoped handler for a non-cluster scoped resource.
 	// This means that when the cluster is deleted, cleanup logic in the mgmt cluster will remove the finalizer added by this
@@ -113,11 +116,11 @@ func Register(workload *config.UserContext) {
 	// (because the resource -roleTemplate and globalRoleBinding- are global resources)
 	rti := workload.Management.Management.RoleTemplates("")
 	rtSync := v3.NewRoleTemplateLifecycleAdapter("cluster-roletemplate-sync_"+workload.ClusterName, true, rti, newRTLifecycle(r))
-	workload.Management.Management.RoleTemplates("").AddHandler("cluster-roletemplate-sync", rtSync)
+	workload.Management.Management.RoleTemplates("").AddHandler(ctx, "cluster-roletemplate-sync", rtSync)
 
 	grbi := workload.Management.Management.GlobalRoleBindings("")
 	grbSync := v3.NewGlobalRoleBindingLifecycleAdapter("grb-sync_"+workload.ClusterName, true, grbi, newGlobalRoleBindingHandler(workload))
-	workload.Management.Management.GlobalRoleBindings("").AddHandler("grb-sync", grbSync)
+	workload.Management.Management.GlobalRoleBindings("").AddHandler(ctx, "grb-sync", grbSync)
 }
 
 type manager struct {

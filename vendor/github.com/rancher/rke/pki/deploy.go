@@ -15,7 +15,7 @@ import (
 	"github.com/rancher/rke/docker"
 	"github.com/rancher/rke/hosts"
 	"github.com/rancher/rke/log"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
+	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/util/cert"
 )
@@ -24,11 +24,14 @@ const (
 	StateDeployerContainerName = "cluster-state-deployer"
 )
 
-func DeployCertificatesOnPlaneHost(ctx context.Context, host *hosts.Host, rkeConfig v3.RancherKubernetesEngineConfig, crtMap map[string]CertificatePKI, certDownloaderImage string, prsMap map[string]v3.PrivateRegistry) error {
+func DeployCertificatesOnPlaneHost(ctx context.Context, host *hosts.Host, rkeConfig v3.RancherKubernetesEngineConfig, crtMap map[string]CertificatePKI, certDownloaderImage string, prsMap map[string]v3.PrivateRegistry, forceDeploy bool) error {
 	crtBundle := GenerateRKENodeCerts(ctx, rkeConfig, host.Address, crtMap)
 	env := []string{}
 	for _, crt := range crtBundle {
 		env = append(env, crt.ToEnv()...)
+	}
+	if forceDeploy {
+		env = append(env, "FORCE_DEPLOY=true")
 	}
 	return doRunDeployer(ctx, host, env, certDownloaderImage, prsMap)
 }
@@ -109,7 +112,7 @@ func doRunDeployer(ctx context.Context, host *hosts.Host, containerEnv []string,
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		if err := host.DClient.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{}); err != nil {
+		if err := host.DClient.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true}); err != nil {
 			return fmt.Errorf("Failed to delete Certificates deployer container on host [%s]: %v", host.Address, err)
 		}
 		return nil
@@ -173,9 +176,7 @@ func FetchCertificatesFromHost(ctx context.Context, extraHosts []*hosts.Host, ho
 		certificate := CertificatePKI{}
 		crt, err := FetchFileFromHost(ctx, GetCertTempPath(certName), image, host, prsMap, CertFetcherContainer, "certificates")
 		// I will only exit with an error if it's not a not-found-error and this is not an etcd certificate
-		if err != nil && (!strings.HasPrefix(certName, "kube-etcd") &&
-			!strings.Contains(certName, APIProxyClientCertName) &&
-			!strings.Contains(certName, RequestHeaderCACertName)) {
+		if err != nil && !strings.HasPrefix(certName, "kube-etcd") {
 			// IsErrNotFound doesn't catch this because it's a custom error
 			if isFileNotFoundErr(err) {
 				return nil, nil
@@ -183,10 +184,8 @@ func FetchCertificatesFromHost(ctx context.Context, extraHosts []*hosts.Host, ho
 			return nil, err
 
 		}
-		// If I can't find an etcd or api aggregator cert, I will not fail and will create it later.
-		if crt == "" && (strings.HasPrefix(certName, "kube-etcd") ||
-			strings.Contains(certName, APIProxyClientCertName) ||
-			strings.Contains(certName, RequestHeaderCACertName)) {
+		// If I can't find an etcd I will not fail and will create it later.
+		if crt == "" && strings.HasPrefix(certName, "kube-etcd") {
 			tmpCerts[certName] = CertificatePKI{}
 			continue
 		}
@@ -221,7 +220,6 @@ func FetchCertificatesFromHost(ctx context.Context, extraHosts []*hosts.Host, ho
 }
 
 func FetchFileFromHost(ctx context.Context, filePath, image string, host *hosts.Host, prsMap map[string]v3.PrivateRegistry, containerName, state string) (string, error) {
-
 	imageCfg := &container.Config{
 		Image: image,
 	}
@@ -246,46 +244,4 @@ func FetchFileFromHost(ctx context.Context, filePath, image string, host *hosts.
 	}
 
 	return file, nil
-}
-
-func getTempPath(s string) string {
-	return TempCertPath + path.Base(s)
-}
-
-func populateCertMap(tmpCerts map[string]CertificatePKI, localConfigPath string, extraHosts []*hosts.Host) map[string]CertificatePKI {
-	certs := make(map[string]CertificatePKI)
-	// CACert
-	certs[CACertName] = ToCertObject(CACertName, "", "", tmpCerts[CACertName].Certificate, tmpCerts[CACertName].Key)
-	// KubeAPI
-	certs[KubeAPICertName] = ToCertObject(KubeAPICertName, "", "", tmpCerts[KubeAPICertName].Certificate, tmpCerts[KubeAPICertName].Key)
-	// kubeController
-	certs[KubeControllerCertName] = ToCertObject(KubeControllerCertName, "", "", tmpCerts[KubeControllerCertName].Certificate, tmpCerts[KubeControllerCertName].Key)
-	// KubeScheduler
-	certs[KubeSchedulerCertName] = ToCertObject(KubeSchedulerCertName, "", "", tmpCerts[KubeSchedulerCertName].Certificate, tmpCerts[KubeSchedulerCertName].Key)
-	// KubeProxy
-	certs[KubeProxyCertName] = ToCertObject(KubeProxyCertName, "", "", tmpCerts[KubeProxyCertName].Certificate, tmpCerts[KubeProxyCertName].Key)
-	// KubeNode
-	certs[KubeNodeCertName] = ToCertObject(KubeNodeCertName, KubeNodeCommonName, KubeNodeOrganizationName, tmpCerts[KubeNodeCertName].Certificate, tmpCerts[KubeNodeCertName].Key)
-	// KubeAdmin
-	kubeAdminCertObj := ToCertObject(KubeAdminCertName, KubeAdminCertName, KubeAdminOrganizationName, tmpCerts[KubeAdminCertName].Certificate, tmpCerts[KubeAdminCertName].Key)
-	kubeAdminCertObj.Config = tmpCerts[KubeAdminCertName].Config
-	kubeAdminCertObj.ConfigPath = localConfigPath
-	certs[KubeAdminCertName] = kubeAdminCertObj
-	// etcd
-	for _, host := range extraHosts {
-		etcdName := GetEtcdCrtName(host.InternalAddress)
-		etcdCrt, etcdKey := tmpCerts[etcdName].Certificate, tmpCerts[etcdName].Key
-		certs[etcdName] = ToCertObject(etcdName, "", "", etcdCrt, etcdKey)
-	}
-
-	return certs
-}
-
-func isFileNotFoundErr(e error) bool {
-	if strings.Contains(e.Error(), "no such file or directory") ||
-		strings.Contains(e.Error(), "Could not find the file") ||
-		strings.Contains(e.Error(), "No such container:path:") {
-		return true
-	}
-	return false
 }

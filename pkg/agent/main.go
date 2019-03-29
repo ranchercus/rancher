@@ -11,18 +11,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"time"
-
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/rancher/norman/pkg/remotedialer"
 	"github.com/rancher/rancher/pkg/agent/clean"
 	"github.com/rancher/rancher/pkg/agent/cluster"
 	"github.com/rancher/rancher/pkg/agent/node"
 	"github.com/rancher/rancher/pkg/logserver"
-	"github.com/rancher/rancher/pkg/remotedialer"
 	"github.com/rancher/rancher/pkg/rkenodeconfigclient"
 	"github.com/sirupsen/logrus"
 )
@@ -171,11 +170,15 @@ func run() error {
 		}
 
 		if isCluster() {
+			err = cluster.RunControllers()
+			if err != nil {
+				logrus.Fatal(err)
+			}
 			return nil
 		}
 
 		if err := cleanup(context.Background()); err != nil {
-			return err
+			logrus.Warnf("Unable to perform docker cleanup: %v", err)
 		}
 
 		go func() {

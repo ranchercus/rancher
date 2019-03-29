@@ -99,7 +99,7 @@ func (n *RKENodeConfigServer) ServeHTTP(rw http.ResponseWriter, req *http.Reques
 
 	if err != nil {
 		rw.WriteHeader(http.StatusInternalServerError)
-		rw.Write([]byte(err.Error()))
+		rw.Write([]byte("Failed to construct node config. Error: " + err.Error()))
 		return
 	}
 
@@ -359,7 +359,7 @@ func createWindowsProcesses(rkeConfig *v3.RancherKubernetesEngineConfig, configN
 		}
 	}
 
-	// get private registeries
+	// get private registries
 	privateRegistriesMap := make(map[string]v3.PrivateRegistry)
 	for _, pr := range rkeConfig.PrivateRegistries {
 		if pr.URL == "" {

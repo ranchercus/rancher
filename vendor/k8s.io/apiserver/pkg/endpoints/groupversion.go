@@ -31,7 +31,6 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/endpoints/discovery"
 	"k8s.io/apiserver/pkg/registry/rest"
-	openapicommon "k8s.io/kube-openapi/pkg/common"
 )
 
 // APIGroupVersion is a helper for exposing rest.Storage objects as http.Handlers via go-restful
@@ -80,13 +79,6 @@ type APIGroupVersion struct {
 	Admit admission.Interface
 
 	MinRequestTimeout time.Duration
-
-	// EnableAPIResponseCompression indicates whether API Responses should support compression
-	// if the client requests it via Accept-Encoding
-	EnableAPIResponseCompression bool
-
-	// OpenAPIConfig lets the individual handlers build a subset of the OpenAPI schema before they are installed.
-	OpenAPIConfig *openapicommon.Config
 }
 
 // InstallREST registers the REST handlers (storage, watch, proxy and redirect) into a restful Container.
@@ -98,7 +90,6 @@ func (g *APIGroupVersion) InstallREST(container *restful.Container) error {
 		group:                        g,
 		prefix:                       prefix,
 		minRequestTimeout:            g.MinRequestTimeout,
-		enableAPIResponseCompression: g.EnableAPIResponseCompression,
 	}
 
 	apiResources, ws, registrationErrors := installer.Install()

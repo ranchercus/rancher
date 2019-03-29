@@ -3,7 +3,7 @@ package ingress
 import (
 	"context"
 
-	"github.com/rancher/types/apis/management.cattle.io/v3"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/rancher/norman/types/convert"
 	util "github.com/rancher/rancher/pkg/controllers/user/workload"
@@ -24,37 +24,35 @@ import (
 type Controller struct {
 	serviceLister v1.ServiceLister
 	services      v1.ServiceInterface
-	clusterName   string
-	clusterLister v3.ClusterLister
+	nodeLister    v1.NodeLister
 }
 
-func Register(ctx context.Context, workload *config.UserOnlyContext, cluster *config.UserContext) {
+func Register(ctx context.Context, workload *config.UserOnlyContext) {
 	c := &Controller{
 		services:      workload.Core.Services(""),
 		serviceLister: workload.Core.Services("").Controller().Lister(),
-		clusterName:   workload.ClusterName,
-		clusterLister: cluster.Management.Management.Clusters("").Controller().Lister(),
+		nodeLister:    workload.Core.Nodes("").Controller().Lister(),
 	}
-	workload.Extensions.Ingresses("").AddHandler("ingressWorkloadController", c.sync)
+	workload.Extensions.Ingresses("").AddHandler(ctx, "ingressWorkloadController", c.sync)
 }
 
-func (c *Controller) sync(key string, obj *v1beta1.Ingress) error {
+func (c *Controller) sync(key string, obj *v1beta1.Ingress) (runtime.Object, error) {
 	if obj == nil || obj.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 	state := GetIngressState(obj)
 	if state == nil {
-		return nil
+		return nil, nil
 	}
 
 	expectedServices, err := generateExpectedServices(state, obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	existingServices, err := getIngressRelatedServices(c.serviceLister, obj, expectedServices)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	needNodePort := c.needNodePort()
@@ -64,13 +62,13 @@ func (c *Controller) sync(key string, obj *v1beta1.Ingress) error {
 		shouldDelete, toUpdate := updateOrDelete(obj, service, expectedServices, needNodePort)
 		if shouldDelete {
 			if err := c.services.DeleteNamespaced(obj.Namespace, service.Name, &metav1.DeleteOptions{}); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
 		if toUpdate != nil {
 			if _, err := c.services.Update(toUpdate); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		// don't create the services which already exist
@@ -87,11 +85,11 @@ func (c *Controller) sync(key string, obj *v1beta1.Ingress) error {
 		}
 		logrus.Infof("Creating %s service %s for ingress %s, port %d", ingressService.serviceName, toCreate.Spec.Type, key, ingressService.servicePort)
 		if _, err := c.services.Create(toCreate); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 func generateExpectedServices(state map[string]string, obj *v1beta1.Ingress) (map[string]ingressService, error) {
@@ -169,12 +167,15 @@ func updateOrDelete(obj *v1beta1.Ingress, service *corev1.Service, expectedServi
 }
 
 func (c *Controller) needNodePort() bool {
-	cluster, err := c.clusterLister.Get("", c.clusterName)
-	if err != nil || cluster.DeletionTimestamp != nil {
+	nodes, err := c.nodeLister.List("", labels.NewSelector())
+	if err != nil {
 		return false
 	}
-	if cluster.Spec.GoogleKubernetesEngineConfig != nil {
-		return true
+
+	for _, node := range nodes {
+		if label, ok := node.Labels["cloud.google.com/gke-nodepool"]; ok && label != "" {
+			return true
+		}
 	}
 	return false
 }

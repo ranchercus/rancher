@@ -19,5 +19,4 @@ __pycache__
 /management-state
 /rancher
 *.pytest_cache
-.DS_Store
-/vendor/github.com/rancher/types
+.kube/

@@ -1,7 +1,10 @@
 package secret
 
 import (
+	"context"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"fmt"
 
@@ -39,7 +42,7 @@ type Controller struct {
 	clusterName               string
 }
 
-func Register(cluster *config.UserContext) {
+func Register(ctx context.Context, cluster *config.UserContext) {
 	clusterSecretsClient := cluster.Core.Secrets("")
 	s := &Controller{
 		secrets:                   clusterSecretsClient,
@@ -53,17 +56,17 @@ func Register(cluster *config.UserContext) {
 		clusterSecretsClient: clusterSecretsClient,
 		managementSecrets:    cluster.Management.Core.Secrets("").Controller().Lister(),
 	}
-	cluster.Core.Namespaces("").AddHandler("secretsController", n.sync)
+	cluster.Core.Namespaces("").AddHandler(ctx, "secretsController", n.sync)
 
 	sync := v1.NewSecretLifecycleAdapter(fmt.Sprintf("secretsController_%s", cluster.ClusterName), true,
 		cluster.Management.Core.Secrets(""), s)
 
-	cluster.Management.Core.Secrets("").AddHandler("secretsController", func(key string, obj *corev1.Secret) error {
+	cluster.Management.Core.Secrets("").AddHandler(ctx, "secretsController", func(key string, obj *corev1.Secret) (runtime.Object, error) {
 		if obj == nil {
 			return sync(key, nil)
 		}
 		if !controller.ObjectInCluster(cluster.ClusterName, obj) {
-			return nil
+			return nil, nil
 		}
 
 		if obj.Labels != nil {
@@ -72,7 +75,7 @@ func Register(cluster *config.UserContext) {
 			}
 		}
 
-		return nil
+		return nil, nil
 	})
 }
 
@@ -81,9 +84,9 @@ type NamespaceController struct {
 	managementSecrets    v1.SecretLister
 }
 
-func (n *NamespaceController) sync(key string, obj *corev1.Namespace) error {
+func (n *NamespaceController) sync(key string, obj *corev1.Namespace) (runtime.Object, error) {
 	if obj == nil || obj.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 	// field.cattle.io/projectId value is <cluster name>:<project name>
 	if obj.Annotations[projectIDLabel] != "" {
@@ -92,29 +95,29 @@ func (n *NamespaceController) sync(key string, obj *corev1.Namespace) error {
 			// on the management side, secret's namespace name equals to project name
 			secrets, err := n.managementSecrets.List(parts[1], labels.NewSelector())
 			if err != nil {
-				return err
+				return nil, err
 			}
 			for _, secret := range secrets {
 				namespacedSecret := getNamespacedSecret(secret, obj.Name)
 				_, err := n.clusterSecretsClient.Create(namespacedSecret)
 				if err != nil && !errors.IsAlreadyExists(err) {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func (s *Controller) Create(obj *corev1.Secret) (*corev1.Secret, error) {
+func (s *Controller) Create(obj *corev1.Secret) (runtime.Object, error) {
 	return nil, s.createOrUpdate(obj, create)
 }
 
-func (s *Controller) Updated(obj *corev1.Secret) (*corev1.Secret, error) {
+func (s *Controller) Updated(obj *corev1.Secret) (runtime.Object, error) {
 	return nil, s.createOrUpdate(obj, update)
 }
 
-func (s *Controller) Remove(obj *corev1.Secret) (*corev1.Secret, error) {
+func (s *Controller) Remove(obj *corev1.Secret) (runtime.Object, error) {
 	clusterNamespaces, err := s.getClusterNamespaces(obj)
 	if err != nil {
 		return nil, err

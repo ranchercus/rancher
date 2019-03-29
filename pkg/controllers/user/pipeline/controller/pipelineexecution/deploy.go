@@ -1,7 +1,6 @@
 package pipelineexecution
 
 import (
-	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/settings"
 
 	"crypto/rsa"
@@ -14,18 +13,21 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/rancher/rancher/pkg/controllers/user/nslabels"
+	"github.com/rancher/rancher/pkg/controllers/user/resourcequota"
 	images "github.com/rancher/rancher/pkg/image"
+	namespaceutil "github.com/rancher/rancher/pkg/namespace"
+	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/randomtoken"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rke/pki"
 	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
-	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	appsv1beta2 "k8s.io/api/apps/v1beta2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -37,29 +39,53 @@ import (
 const projectIDFieldLabel = "field.cattle.io/projectId"
 const defaultPortRange = "34000-35000"
 
-func (l *Lifecycle) deploy(obj *v3.PipelineExecution) error {
-	logrus.Debug("deploy pipeline workloads and services")
+func (l *Lifecycle) deploy(projectName string) error {
 
+	clusterID, projectID := ref.Parse(projectName)
+	ns := getPipelineNamespace(clusterID, projectID)
+	if _, err := l.namespaceLister.Get("", ns.Name); err == nil {
+		return l.reconcileRb(projectName)
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	logrus.Debug("deploy pipeline workloads and services")
+	if _, err := l.namespaces.Create(ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		return errors.Wrapf(err, "Error creating the pipeline namespace")
+	}
+	if err := l.waitResourceQuotaInitCondition(ns.Name); err != nil {
+		return err
+	}
 	token, err := randomtoken.Generate()
 	if err != nil {
 		logrus.Warningf("warning generate random token got - %v, use default instead", err)
 		token = utils.PipelineSecretDefaultToken
 	}
 
-	nsName := utils.GetPipelineCommonName(obj)
-	clusterID, projectID := ref.Parse(obj.Spec.ProjectName)
-
-	ns := getCommonPipelineNamespace()
+	nsName := utils.GetPipelineCommonName(projectName)
+	ns = getCommonPipelineNamespace()
 	if _, err := l.namespaces.Create(ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create ns")
-	}
-	ns = getPipelineNamespace(clusterID, projectID)
-	if _, err := l.namespaces.Create(ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create ns")
+		return errors.Wrapf(err, "Error creating the cattle-pipeline namespace")
 	}
 	secret := getPipelineSecret(nsName, token)
+	for i := 0; i < 3; i++ {
+		// If project resource quota is enabled, It won't succeed until the resource quota in namespace is synced.
+		// Do retries for this case.
+		if _, err = l.secrets.Create(secret); err == nil || apierrors.IsAlreadyExists(err) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return errors.Wrapf(err, "Error creating a pipeline secret")
+	}
+
+	apikey, err := l.systemAccountManager.GetOrCreateProjectSystemToken(projectID)
+	if err != nil {
+		return err
+	}
+	secret = GetAPIKeySecret(nsName, apikey)
 	if _, err := l.secrets.Create(secret); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create secret")
+		return errors.Wrapf(err, "Error creating a pipeline secret")
 	}
 
 	if err := l.reconcileRegistryCASecret(clusterID); err != nil {
@@ -71,50 +97,79 @@ func (l *Lifecycle) deploy(obj *v3.PipelineExecution) error {
 
 	sa := getServiceAccount(nsName)
 	if _, err := l.serviceAccounts.Create(sa); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create service account")
+		return errors.Wrapf(err, "Error creating a pipeline service account")
 	}
 	np := getNetworkPolicy(nsName)
 	if _, err := l.networkPolicies.Create(np); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create networkpolicy")
+		return errors.Wrapf(err, "Error create a pipeline networkpolicy")
 	}
 	jenkinsService := getJenkinsService(nsName)
 	if _, err := l.services.Create(jenkinsService); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create jenkins service")
+		return errors.Wrapf(err, "Error creating the jenkins service")
 	}
 	jenkinsDeployment := GetJenkinsDeployment(nsName)
 	if _, err := l.deployments.Create(jenkinsDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create jenkins deployment")
+		return errors.Wrapf(err, "Error creating the jenkins deployment")
 	}
 	registryService := getRegistryService(nsName)
 	if _, err := l.services.Create(registryService); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create registry service")
+		return errors.Wrapf(err, "Error creating the registry service")
 	}
 	registryDeployment := GetRegistryDeployment(nsName)
 	if _, err := l.deployments.Create(registryDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create registry deployment")
+		return errors.Wrapf(err, "Error creating the registry deployment")
 	}
 	minioService := getMinioService(nsName)
 	if _, err := l.services.Create(minioService); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create minio service")
+		return errors.Wrapf(err, "Error creating the minio service")
 	}
 	minioDeployment := GetMinioDeployment(nsName)
 	if _, err := l.deployments.Create(minioDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create minio deployment")
+		return errors.Wrapf(err, "Error creating the minio deployment")
 	}
 
 	if err := l.reconcileProxyConfigMap(projectID); err != nil {
 		return err
 	}
 	//docker credential for local registry
-	if err := l.reconcileRegistryCredential(obj, token); err != nil {
+	if err := l.reconcileRegistryCredential(projectName, token); err != nil {
 		return err
 	}
 	nginxDaemonset := getProxyDaemonset()
 	if _, err := l.daemonsets.Create(nginxDaemonset); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create nginx proxy")
+		return errors.Wrapf(err, "Error creating the nginx proxy")
 	}
 
-	return l.reconcileRb(obj)
+	return l.reconcileRb(projectName)
+}
+
+func (l *Lifecycle) waitResourceQuotaInitCondition(namespace string) error {
+	tries := 0
+	for tries <= 3 {
+		ns, err := l.namespaces.Get(namespace, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		invalid, err := namespaceutil.IsNamespaceConditionSet(ns, resourcequota.ResourceQuotaValidatedCondition, false)
+		if err != nil {
+			return err
+		}
+		if invalid {
+			return fmt.Errorf("available resource quota in this project does not fit for the dedicated pipeline namespace, please make sure there is vacancy for the default namespace quota")
+		}
+
+		set, err := namespaceutil.IsNamespaceConditionSet(ns, resourcequota.ResourceQuotaInitCondition, true)
+		if err != nil {
+			return err
+		}
+		if set {
+			break
+		}
+		time.Sleep(2 * time.Second)
+		tries++
+	}
+	return nil
 }
 
 func getCommonPipelineNamespace() *corev1.Namespace {
@@ -159,9 +214,21 @@ func getPipelineSecret(ns string, token string) *corev1.Secret {
 	}
 }
 
+func GetAPIKeySecret(ns string, key string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      utils.PipelineAPIKeySecretName,
+		},
+		Data: map[string][]byte{
+			utils.PipelineSecretAPITokenKey: []byte(key),
+		},
+	}
+}
+
 func (l *Lifecycle) reconcileRegistryCASecret(clusterID string) error {
 	cn := "docker-registry-ca"
-	CACrt, CAKey, err := pki.GenerateCACertAndKey(cn)
+	CACrt, CAKey, err := pki.GenerateCACertAndKey(cn, nil)
 	if err != nil {
 		return err
 	}
@@ -437,6 +504,16 @@ func GetJenkinsDeployment(ns string) *appsv1beta2.Deployment {
 									},
 								},
 							},
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewQuantity(1, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(1024E6, resource.BinarySI),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(500, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(300E6, resource.BinarySI),
+								},
+							},
 						},
 					},
 				},
@@ -541,6 +618,16 @@ func GetRegistryDeployment(ns string) *appsv1beta2.Deployment {
 									Value: utils.RegistryAuthPath + utils.PipelineSecretRegistryTokenKey,
 								},
 							},
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(200, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(200E6, resource.BinarySI),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(100, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(100E6, resource.BinarySI),
+								},
+							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      utils.RegistryCrtVolumeName,
@@ -623,7 +710,7 @@ func (l *Lifecycle) reconcileProxyConfigMap(projectID string) error {
 			return err
 		}
 		toUpdate := cm.DeepCopy()
-		portMap, err := utils.GetRegistryPortMapping(toUpdate)
+		portMap, err = utils.GetRegistryPortMapping(toUpdate)
 		if err != nil {
 			return err
 		}
@@ -808,6 +895,16 @@ func GetMinioDeployment(ns string) *appsv1beta2.Deployment {
 									ContainerPort: utils.MinioPort,
 								},
 							},
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(200, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(200E6, resource.BinarySI),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(100, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(100E6, resource.BinarySI),
+								},
+							},
 						},
 					},
 				},
@@ -816,7 +913,7 @@ func GetMinioDeployment(ns string) *appsv1beta2.Deployment {
 	}
 }
 
-func (l *Lifecycle) reconcileRegistryCredential(obj *v3.PipelineExecution, token string) error {
+func (l *Lifecycle) reconcileRegistryCredential(projectName, token string) error {
 	cm, err := l.configMaps.GetNamespaced(utils.PipelineNamespace, utils.ProxyConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -825,13 +922,13 @@ func (l *Lifecycle) reconcileRegistryCredential(obj *v3.PipelineExecution, token
 	if err != nil {
 		return err
 	}
-	_, projectID := ref.Parse(obj.Spec.ProjectName)
+	_, projectID := ref.Parse(projectName)
 	port, ok := portMap[projectID]
 	if !ok || port == "" {
 		return errors.New("Found no port for local registry")
 	}
 	regHostname := "127.0.0.1:" + port
-	dockerCredential, err := getRegistryCredential(obj.Spec.ProjectName, token, regHostname)
+	dockerCredential, err := getRegistryCredential(projectName, token, regHostname)
 	if err != nil {
 		return err
 	}
@@ -839,7 +936,7 @@ func (l *Lifecycle) reconcileRegistryCredential(obj *v3.PipelineExecution, token
 		return errors.Wrapf(err, "Error create credential for local registry")
 	}
 	if settings.DefaultPipelineRegistry.Get() != "" {
-		defaultCockerCredential, err := getDefaultRegistryCredential(obj.Spec.ProjectName, token, settings.DefaultPipelineRegistry.Get())
+		defaultCockerCredential, err := getDefaultRegistryCredential(projectName, token, settings.DefaultPipelineRegistry.Get())
 		if err != nil {
 			return err
 		}

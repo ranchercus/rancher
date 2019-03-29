@@ -4,6 +4,7 @@ import (
 	tokenUtil "github.com/rancher/rancher/pkg/auth/tokens"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/config"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
@@ -22,9 +23,9 @@ func newTokenController(mgmt *config.ManagementContext) *TokenController {
 }
 
 //sync is called periodically and on real updates
-func (n *TokenController) sync(key string, obj *v3.Token) error {
+func (n *TokenController) sync(key string, obj *v3.Token) (runtime.Object, error) {
 	if obj == nil || obj.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 
 	if obj.TTLMillis != 0 && obj.ExpiresAt == "" {
@@ -32,8 +33,8 @@ func (n *TokenController) sync(key string, obj *v3.Token) error {
 		newObj := obj.DeepCopy()
 		tokenUtil.SetTokenExpiresAt(newObj)
 		if _, err := n.tokens.Update(newObj); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return nil, nil
 }

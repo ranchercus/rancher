@@ -6,6 +6,7 @@ import (
 	"github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientcache "k8s.io/client-go/tools/cache"
 )
 
@@ -18,19 +19,19 @@ type reconcileController struct {
 	nsIndexer  clientcache.Indexer
 }
 
-func (r *reconcileController) reconcileNamespaces(key string, p *v3.Project) error {
+func (r *reconcileController) reconcileNamespaces(key string, p *v3.Project) (runtime.Object, error) {
 	if p == nil || p.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 	projectID := fmt.Sprintf("%s:%s", p.Namespace, p.Name)
 	namespaces, err := r.nsIndexer.ByIndex(nsByProjectIndex, projectID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for _, n := range namespaces {
 		ns := n.(*corev1.Namespace)
 		r.namespaces.Controller().Enqueue("", ns.Name)
 	}
-	return nil
+	return nil, nil
 }

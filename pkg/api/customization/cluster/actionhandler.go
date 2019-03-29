@@ -1,4 +1,4 @@
-package clusteregistrationtokens
+package cluster
 
 import (
 	"bytes"
@@ -17,15 +17,16 @@ import (
 	"github.com/rancher/norman/types/convert"
 	"github.com/rancher/norman/types/values"
 	"github.com/rancher/rancher/pkg/clustermanager"
+	"github.com/rancher/rancher/pkg/controllers/management/etcdbackup"
 	"github.com/rancher/rancher/pkg/controllers/user/nslabels"
 	"github.com/rancher/rancher/pkg/kubeconfig"
 	"github.com/rancher/rancher/pkg/kubectl"
+	"github.com/rancher/rancher/pkg/monitoring"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/types/apis/cluster.cattle.io/v3/schema"
 	corev1 "github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/client/cluster/v3"
-	managementv3 "github.com/rancher/types/client/management/v3"
 	mgmtclient "github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/compose"
 	"github.com/rancher/types/user"
@@ -44,9 +45,18 @@ type ActionHandler struct {
 	NodeTemplateGetter v3.NodeTemplatesGetter
 	UserMgr            user.Manager
 	ClusterManager     *clustermanager.Manager
+	BackupClient       v3.EtcdBackupInterface
 }
 
 func (a ActionHandler) ClusterActionHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	canUpdateCluster := func() bool {
+		cluster := map[string]interface{}{
+			"id": apiContext.ID,
+		}
+
+		return apiContext.AccessControl.CanDo(v3.ClusterGroupVersionKind.Group, v3.ClusterResource.Name, "update", apiContext, cluster, apiContext.Schema) == nil
+	}
+
 	switch actionName {
 	case "generateKubeconfig":
 		return a.GenerateKubeconfigActionHandler(actionName, action, apiContext)
@@ -54,8 +64,46 @@ func (a ActionHandler) ClusterActionHandler(actionName string, action *types.Act
 		return a.ImportYamlHandler(actionName, action, apiContext)
 	case "exportYaml":
 		return a.ExportYamlHandler(actionName, action, apiContext)
+	case "viewMonitoring":
+		return a.viewMonitoring(actionName, action, apiContext)
+	case "editMonitoring":
+		if !canUpdateCluster() {
+			return httperror.NewAPIError(httperror.Unauthorized, "can not access")
+		}
+		return a.editMonitoring(actionName, action, apiContext)
+	case "enableMonitoring":
+		if !canUpdateCluster() {
+			return httperror.NewAPIError(httperror.Unauthorized, "can not access")
+		}
+		return a.enableMonitoring(actionName, action, apiContext)
+	case "disableMonitoring":
+		if !canUpdateCluster() {
+			return httperror.NewAPIError(httperror.Unauthorized, "can not access")
+		}
+		return a.disableMonitoring(actionName, action, apiContext)
+	case "backupEtcd":
+		if !canUpdateCluster() {
+			return httperror.NewAPIError(httperror.Unauthorized, "can not backup etcd")
+		}
+		return a.BackupEtcdHandler(actionName, action, apiContext)
+	case "restoreFromEtcdBackup":
+		if !canUpdateCluster() {
+			return httperror.NewAPIError(httperror.Unauthorized, "can not restore etcd backup")
+		}
+		return a.RestoreFromEtcdBackupHandler(actionName, action, apiContext)
+	case "rotateCertificates":
+		if !canUpdateCluster() {
+			return httperror.NewAPIError(httperror.Unauthorized, "can not rotate certificates")
+		}
+		return a.RotateCertificates(actionName, action, apiContext)
 	}
+
 	return httperror.NewAPIError(httperror.NotFound, "not found")
+}
+
+func (a ActionHandler) getClusterToken(clusterID string, apiContext *types.APIContext) (string, error) {
+	userName := a.UserMgr.GetUser(apiContext)
+	return a.UserMgr.EnsureClusterToken(clusterID, fmt.Sprintf("kubeconfig-%s.%s", userName, clusterID), "Kubeconfig token", userName)
 }
 
 func (a ActionHandler) getToken(apiContext *types.APIContext) (string, error) {
@@ -64,20 +112,37 @@ func (a ActionHandler) getToken(apiContext *types.APIContext) (string, error) {
 }
 
 func (a ActionHandler) GenerateKubeconfigActionHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
-	var cluster managementv3.Cluster
+	var cluster mgmtclient.Cluster
 	if err := access.ByID(apiContext, apiContext.Version, apiContext.Type, apiContext.ID, &cluster); err != nil {
 		return err
 	}
 
+	var (
+		cfg   string
+		token string
+		err   error
+	)
+
+	if cluster.LocalClusterAuthEndpoint.Enabled {
+		token, err = a.getClusterToken(cluster.ID, apiContext)
+	} else {
+		token, err = a.getToken(apiContext)
+	}
+	if err != nil {
+		return err
+	}
+
 	userName := a.UserMgr.GetUser(apiContext)
-	token, err := a.getToken(apiContext)
+
+	if cluster.LocalClusterAuthEndpoint.Enabled {
+		cfg, err = kubeconfig.ForClusterTokenBased(&cluster, apiContext.ID, apiContext.Request.Host, userName, token)
+	} else {
+		cfg, err = kubeconfig.ForTokenBased(cluster.Name, apiContext.ID, apiContext.Request.Host, userName, token)
+	}
 	if err != nil {
 		return err
 	}
-	cfg, err := kubeconfig.ForTokenBased(cluster.Name, apiContext.ID, apiContext.Request.Host, userName, token)
-	if err != nil {
-		return err
-	}
+
 	data := map[string]interface{}{
 		"config": cfg,
 		"type":   "generateKubeconfigOutput",
@@ -92,12 +157,12 @@ func (a ActionHandler) ImportYamlHandler(actionName string, action *types.Action
 		return errors.Wrap(err, "reading request body error")
 	}
 
-	input := managementv3.ImportClusterYamlInput{}
+	input := mgmtclient.ImportClusterYamlInput{}
 	if err = json.Unmarshal(data, &input); err != nil {
 		return errors.Wrap(err, "unmarshaling input error")
 	}
 
-	var cluster managementv3.Cluster
+	var cluster mgmtclient.Cluster
 	if err := access.ByID(apiContext, apiContext.Version, apiContext.Type, apiContext.ID, &cluster); err != nil {
 		return err
 	}
@@ -156,7 +221,7 @@ func (a ActionHandler) ExportYamlHandler(actionName string, action *types.Action
 	topkey.Clusters[cluster.Spec.DisplayName] = c
 
 	// if driver is rancherKubernetesEngine, add any nodePool if found
-	if cluster.Status.Driver == "rancherKubernetesEngine" {
+	if cluster.Status.Driver == v3.ClusterDriverRKE {
 		nodepools, err := a.NodepoolGetter.NodePools(cluster.Name).List(metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -212,6 +277,127 @@ func (a ActionHandler) ExportYamlHandler(actionName string, action *types.Action
 	reader := bytes.NewReader(jsonOutput)
 	apiContext.Response.Header().Set("Content-Type", "application/json")
 	http.ServeContent(apiContext.Response, apiContext.Request, "exportYaml", time.Now(), reader)
+	return nil
+}
+
+func (a ActionHandler) viewMonitoring(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.NotFound, "none existent Cluster")
+	}
+	if cluster.DeletionTimestamp != nil {
+		return httperror.NewAPIError(httperror.InvalidType, "deleting Cluster")
+	}
+
+	if !cluster.Spec.EnableClusterMonitoring {
+		return httperror.NewAPIError(httperror.InvalidState, "disabling Monitoring")
+	}
+
+	// need to support `map[string]string` as entry value type in norman Builder.convertMap
+	answers, err := convert.EncodeToMap(monitoring.GetOverwroteAppAnswers(cluster.Annotations))
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.ServerError, "failed to parse response")
+	}
+	apiContext.WriteResponse(http.StatusOK, map[string]interface{}{
+		"answers": answers,
+		"type":    "monitoringOutput",
+	})
+	return nil
+}
+
+func (a ActionHandler) editMonitoring(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.NotFound, "none existent Cluster")
+	}
+	if cluster.DeletionTimestamp != nil {
+		return httperror.NewAPIError(httperror.InvalidType, "deleting Cluster")
+	}
+
+	if !cluster.Spec.EnableClusterMonitoring {
+		return httperror.NewAPIError(httperror.InvalidState, "disabling Monitoring")
+	}
+
+	data, err := ioutil.ReadAll(apiContext.Request.Body)
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.InvalidBodyContent, "unable to read request content")
+	}
+	var input v3.MonitoringInput
+	if err = json.Unmarshal(data, &input); err != nil {
+		return httperror.WrapAPIError(err, httperror.InvalidBodyContent, "failed to parse request content")
+	}
+
+	cluster = cluster.DeepCopy()
+	cluster.Annotations = monitoring.AppendAppOverwritingAnswers(cluster.Annotations, string(data))
+
+	_, err = a.ClusterClient.Update(cluster)
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.ServerError, "failed to upgrade monitoring")
+	}
+
+	apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
+	return nil
+}
+
+func (a ActionHandler) enableMonitoring(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.NotFound, "none existent Cluster")
+	}
+	if cluster.DeletionTimestamp != nil {
+		return httperror.NewAPIError(httperror.InvalidType, "deleting Cluster")
+	}
+
+	if cluster.Spec.EnableClusterMonitoring {
+		apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
+		return nil
+	}
+
+	data, err := ioutil.ReadAll(apiContext.Request.Body)
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.InvalidBodyContent, "unable to read request content")
+	}
+	var input v3.MonitoringInput
+	if err = json.Unmarshal(data, &input); err != nil {
+		return httperror.WrapAPIError(err, httperror.InvalidBodyContent, "failed to parse request content")
+	}
+
+	cluster = cluster.DeepCopy()
+	cluster.Spec.EnableClusterMonitoring = true
+	cluster.Annotations = monitoring.AppendAppOverwritingAnswers(cluster.Annotations, string(data))
+
+	_, err = a.ClusterClient.Update(cluster)
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.ServerError, "failed to enable monitoring")
+	}
+
+	apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
+	return nil
+}
+
+func (a ActionHandler) disableMonitoring(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.NotFound, "none existent Cluster")
+	}
+	if cluster.DeletionTimestamp != nil {
+		return httperror.NewAPIError(httperror.InvalidType, "deleting Cluster")
+	}
+
+	if !cluster.Spec.EnableClusterMonitoring {
+		apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
+		return nil
+	}
+
+	cluster = cluster.DeepCopy()
+	cluster.Spec.EnableClusterMonitoring = false
+
+	_, err = a.ClusterClient.Update(cluster)
+	if err != nil {
+		return httperror.WrapAPIError(err, httperror.ServerError, "failed to disable monitoring")
+	}
+
+	apiContext.WriteResponse(http.StatusNoContent, map[string]interface{}{})
 	return nil
 }
 
@@ -373,11 +559,168 @@ func (a ActionHandler) processYAML(apiContext *types.APIContext, clusterName, pr
 	return nil
 }
 
-func (a ActionHandler) getKubeConfig(apiContext *types.APIContext, cluster *managementv3.Cluster) (*clientcmdapi.Config, error) {
+func (a ActionHandler) getKubeConfig(apiContext *types.APIContext, cluster *mgmtclient.Cluster) (*clientcmdapi.Config, error) {
 	token, err := a.getToken(apiContext)
 	if err != nil {
 		return nil, err
 	}
 
 	return a.ClusterManager.KubeConfig(cluster.ID, token), nil
+}
+
+func (a ActionHandler) RotateCertificates(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	rtn := map[string]interface{}{
+		"type":    "rotateCertificateOutput",
+		"message": "rotating certificates for all components",
+	}
+	var mgmtCluster mgmtclient.Cluster
+	if err := access.ByID(apiContext, apiContext.Version, apiContext.Type, apiContext.ID, &mgmtCluster); err != nil {
+		rtn["message"] = "none existent Cluster"
+		apiContext.WriteResponse(http.StatusBadRequest, rtn)
+
+		return errors.Wrapf(err, "failed to get Cluster by ID %s", apiContext.ID)
+	}
+
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		rtn["message"] = "none existent Cluster"
+		apiContext.WriteResponse(http.StatusBadRequest, rtn)
+
+		return errors.Wrapf(err, "failed to get Cluster by ID %s", apiContext.ID)
+	}
+	data, err := ioutil.ReadAll(apiContext.Request.Body)
+	if err != nil {
+		rtn["message"] = "reading request body error"
+		apiContext.WriteResponse(http.StatusBadRequest, rtn)
+
+		return errors.Wrapf(err, "failed to read request body")
+	}
+
+	input := mgmtclient.RotateCertificateInput{}
+	if err = json.Unmarshal(data, &input); err != nil {
+		rtn["message"] = "failed to parse request content"
+		apiContext.WriteResponse(http.StatusBadRequest, rtn)
+
+		return errors.Wrap(err, "unmarshaling input error")
+	}
+
+	rotateCerts := &v3.RotateCertificates{
+		CACertificates: input.CACertificates,
+		Services:       []string{input.Services},
+	}
+	cluster.Spec.RancherKubernetesEngineConfig.RotateCertificates = rotateCerts
+	if _, err := a.ClusterClient.Update(cluster); err != nil {
+		rtn["message"] = "failed to update cluster object"
+		apiContext.WriteResponse(http.StatusInternalServerError, rtn)
+
+		return errors.Wrapf(err, "unable to update Cluster %s", cluster.Name)
+	}
+	if input.CACertificates {
+		rtn["message"] = "rotating CA certificates and all components"
+	} else if len(input.Services) > 0 {
+		rtn["message"] = fmt.Sprintf("rotating %s certificates", input.Services)
+	} else {
+		rtn["message"] = "rotating certificates for all components"
+	}
+
+	apiContext.WriteResponse(http.StatusOK, rtn)
+	return nil
+}
+
+func (a ActionHandler) BackupEtcdHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	response := map[string]interface{}{
+		"message": "starting ETCD backup",
+	}
+	// checking access
+	var mgmtCluster mgmtclient.Cluster
+	if err := access.ByID(apiContext, apiContext.Version, apiContext.Type, apiContext.ID, &mgmtCluster); err != nil {
+		response["message"] = "none existent Cluster"
+		apiContext.WriteResponse(http.StatusBadRequest, response)
+		return errors.Wrapf(err, "failed to get Cluster by ID %s", apiContext.ID)
+	}
+
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		response["message"] = "none existent Cluster"
+		apiContext.WriteResponse(http.StatusBadRequest, response)
+		return errors.Wrapf(err, "failed to get Cluster by ID %s", apiContext.ID)
+	}
+
+	newBackup := etcdbackup.NewBackupObject(cluster, true)
+
+	backup, err := a.BackupClient.Create(newBackup)
+	if err != nil {
+		response["message"] = "failed to create etcdbackup object"
+		apiContext.WriteResponse(http.StatusInternalServerError, response)
+		return errors.Wrapf(err, "failed to cteate etcdbackup object")
+	}
+	backupJSON, err := json.Marshal(backup)
+	if err != nil {
+		return err
+	}
+	apiContext.Response.Header().Set("Content-Type", "application/json")
+	http.ServeContent(apiContext.Response, apiContext.Request, "backupEtcd", time.Now(), bytes.NewReader(backupJSON))
+	return nil
+}
+
+func (a ActionHandler) RestoreFromEtcdBackupHandler(actionName string, action *types.Action, apiContext *types.APIContext) error {
+	response := map[string]interface{}{
+		"message": "restoring etcdbackup for the cluster",
+	}
+
+	data, err := ioutil.ReadAll(apiContext.Request.Body)
+	if err != nil {
+		response["message"] = "reading request body error"
+		apiContext.WriteResponse(http.StatusInternalServerError, response)
+		return errors.Wrap(err, "failed to read request body")
+	}
+
+	input := mgmtclient.RestoreFromEtcdBackupInput{}
+	if err = json.Unmarshal(data, &input); err != nil {
+		response["message"] = "failed to parse request content"
+		apiContext.WriteResponse(http.StatusBadRequest, response)
+		return errors.Wrap(err, "unmarshaling input error")
+	}
+	// checking access
+	var mgmtCluster mgmtclient.Cluster
+	if err := access.ByID(apiContext, apiContext.Version, apiContext.Type, apiContext.ID, &mgmtCluster); err != nil {
+		response["message"] = "nonexistent Cluster"
+		apiContext.WriteResponse(http.StatusBadRequest, response)
+		return errors.Wrapf(err, "failed to get Cluster by ID %s", apiContext.ID)
+	}
+
+	cluster, err := a.ClusterClient.Get(apiContext.ID, metav1.GetOptions{})
+	if err != nil {
+		response["message"] = "nonexistent Cluster"
+		apiContext.WriteResponse(http.StatusBadRequest, response)
+		return errors.Wrapf(err, "failed to get Cluster by ID %s", apiContext.ID)
+	}
+
+	clusterBackupConfig := cluster.Spec.RancherKubernetesEngineConfig.Services.Etcd.BackupConfig
+	if clusterBackupConfig != nil && clusterBackupConfig.S3BackupConfig == nil {
+		ns, name := ref.Parse(input.EtcdBackupID)
+		if ns == "" || name == "" {
+			return httperror.NewAPIError(httperror.InvalidFormat, fmt.Sprintf("invalid input id %s", input.EtcdBackupID))
+		}
+		backup, err := a.BackupClient.GetNamespaced(ns, name, metav1.GetOptions{})
+		if err != nil {
+			response["message"] = "error getting backup config"
+			apiContext.WriteResponse(http.StatusInternalServerError, response)
+			return errors.Wrapf(err, "failed to get backup config by ID %s", input.EtcdBackupID)
+		}
+		if backup.Spec.BackupConfig.S3BackupConfig != nil {
+			return httperror.NewAPIError(httperror.MethodNotAllowed,
+				fmt.Sprintf("restoring S3 backups with no cluster level S3 configuration is not supported %s", input.EtcdBackupID))
+		}
+	}
+
+	cluster.Spec.RancherKubernetesEngineConfig.Restore.SnapshotName = input.EtcdBackupID
+	cluster.Spec.RancherKubernetesEngineConfig.Restore.Restore = true
+	if _, err = a.ClusterClient.Update(cluster); err != nil {
+		response["message"] = "failed to update cluster object"
+		apiContext.WriteResponse(http.StatusInternalServerError, response)
+		return errors.Wrapf(err, "unable to update Cluster %s", cluster.Name)
+	}
+	apiContext.WriteResponse(http.StatusCreated, response)
+	return nil
 }

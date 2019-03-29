@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"sync"
 
 	"github.com/pkg/errors"
@@ -62,20 +64,20 @@ func Register(ctx context.Context, workload *config.UserOnlyContext) {
 		serviceController: workload.Core.Services("").Controller(),
 		serviceLister:     workload.Core.Services("").Controller().Lister(),
 	}
-	workload.Core.Services("").AddHandler("dnsRecordController", c.sync)
-	workload.Core.Endpoints("").AddHandler("dnsRecordEndpointsController", e.reconcileServicesForEndpoint)
+	workload.Core.Services("").AddHandler(ctx, "dnsRecordController", c.sync)
+	workload.Core.Endpoints("").AddHandler(ctx, "dnsRecordEndpointsController", e.reconcileServicesForEndpoint)
 
 }
 
-func (c *Controller) sync(key string, obj *corev1.Service) error {
+func (c *Controller) sync(key string, obj *corev1.Service) (runtime.Object, error) {
 	// no need to handle the remove
 	if obj == nil || obj.DeletionTimestamp != nil {
 		c.queueUpdateForExtNameSvc(key, true)
 		dnsServiceUUIDToTargetEndpointUUIDs.Delete(key)
-		return nil
+		return nil, nil
 	}
 	c.queueUpdateForExtNameSvc(key, false)
-	return c.reconcileEndpoints(key, obj)
+	return nil, c.reconcileEndpoints(key, obj)
 }
 
 func (c *Controller) reconcileEndpoints(key string, obj *corev1.Service) error {
@@ -100,6 +102,7 @@ func (c *Controller) reconcileEndpoints(key string, obj *corev1.Service) error {
 	}
 
 	var newEndpointSubsets []corev1.EndpointSubset
+	var addresses []corev1.EndpointAddress
 	targetEndpointUUIDs := make(map[string]bool)
 	toHandleExternalName := false
 	var externalName string
@@ -135,9 +138,29 @@ func (c *Controller) reconcileEndpoints(key string, obj *corev1.Service) error {
 			logrus.Warnf("Failed to fetch endpoints for dns record [%s]: endpoint is being removed", groomed)
 			continue
 		}
-		newEndpointSubsets = append(newEndpointSubsets, targetEndpoint.Subsets...)
+		for _, subset := range targetEndpoint.Subsets {
+			for _, addr := range subset.Addresses {
+				addresses = append(addresses, addr)
+			}
+		}
 		targetEndpointUUID := fmt.Sprintf("%s/%s", targetEndpoint.Namespace, targetEndpoint.Name)
 		targetEndpointUUIDs[targetEndpointUUID] = true
+	}
+
+	var ports []corev1.EndpointPort
+	if len(addresses) > 0 {
+		for _, p := range obj.Spec.Ports {
+			epPort := corev1.EndpointPort{Name: p.Name, Protocol: p.Protocol, Port: p.TargetPort.IntVal}
+			ports = append(ports, epPort)
+		}
+		if len(ports) == 0 {
+			epPort := corev1.EndpointPort{Name: "default", Protocol: corev1.ProtocolTCP, Port: 42}
+			ports = append(ports, epPort)
+		}
+		newEndpointSubsets = append(newEndpointSubsets, corev1.EndpointSubset{
+			Addresses: addresses,
+			Ports:     ports,
+		})
 	}
 
 	if toHandleExternalName {
@@ -209,7 +232,7 @@ func (c *Controller) reconcileEndpoints(key string, obj *corev1.Service) error {
 	return nil
 }
 
-func (c *EndpointController) reconcileServicesForEndpoint(key string, obj *corev1.Endpoints) error {
+func (c *EndpointController) reconcileServicesForEndpoint(key string, obj *corev1.Endpoints) (runtime.Object, error) {
 	var dnsRecordServicesToReconcile []string
 	dnsServiceUUIDToTargetEndpointUUIDs.Range(func(k, v interface{}) bool {
 		if _, ok := v.(map[string]bool)[key]; ok {
@@ -225,7 +248,7 @@ func (c *EndpointController) reconcileServicesForEndpoint(key string, obj *corev
 		c.serviceController.Enqueue(namespace, serviceName)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func (c *Controller) queueUpdateForExtNameSvc(key string, delete bool) {

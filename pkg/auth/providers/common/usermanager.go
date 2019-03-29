@@ -138,21 +138,21 @@ func (m *userManager) GetUser(apiContext *types.APIContext) string {
 }
 
 // checkis if the supplied principal can login based on the accessMode and allowed principals
-func (m *userManager) CheckAccess(accessMode string, allowedPrincipalIDs []string, userPrinc v3.Principal, groups []v3.Principal) (bool, error) {
+func (m *userManager) CheckAccess(accessMode string, allowedPrincipalIDs []string, userPrincipalID string, groups []v3.Principal) (bool, error) {
 	if accessMode == "unrestricted" || accessMode == "" {
 		return true, nil
 	}
 
 	if accessMode == "required" || accessMode == "restricted" {
-		user, err := m.checkCache(userPrinc.Name)
+		user, err := m.checkCache(userPrincipalID)
 		if err != nil {
 			return false, err
 		}
 
-		userPrincipals := []string{userPrinc.Name}
+		userPrincipals := []string{userPrincipalID}
 		if user != nil {
 			for _, p := range user.PrincipalIDs {
-				if userPrinc.Name != p {
+				if userPrincipalID != p {
 					userPrincipals = append(userPrincipals, p)
 				}
 			}
@@ -189,14 +189,16 @@ func (m *userManager) CheckAccess(accessMode string, allowedPrincipalIDs []strin
 }
 
 func (m *userManager) EnsureToken(tokenName, description, userName string) (string, error) {
+	return m.EnsureClusterToken("", tokenName, description, userName)
+}
+
+func (m *userManager) EnsureClusterToken(clusterName, tokenName, description, userName string) (string, error) {
 	if strings.HasPrefix(tokenName, "token-") {
 		return "", errors.New("token names can't start with token-")
 	}
 
 	token, err := m.tokenLister.Get("", tokenName)
-	if apierrors.IsNotFound(err) {
-		token, err = nil, nil
-	} else if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		return "", err
 	}
 
@@ -219,6 +221,7 @@ func (m *userManager) EnsureToken(tokenName, description, userName string) (stri
 			AuthProvider: "local",
 			IsDerived:    true,
 			Token:        key,
+			ClusterName:  clusterName,
 		}
 
 		logrus.Infof("Creating token for user %v", userName)
@@ -490,6 +493,21 @@ func (m *userManager) createUsersRoleAnnotation() (map[string]string, error) {
 	annotations[roleTemplatesRequired] = string(d)
 
 	return annotations, nil
+}
+
+func (m *userManager) GetUserByPrincipalID(principalName string) (*v3.User, error) {
+	user, err := m.checkCache(principalName)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		// Not in cache, query API by label
+		user, _, err = m.checkLabels(principalName)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return user, nil
 }
 
 func (m *userManager) checkCache(principalName string) (*v3.User, error) {

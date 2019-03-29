@@ -1,10 +1,12 @@
 package helm
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
+	"k8s.io/api/core/v1"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/rancher/rancher/pkg/controllers/management/compose/common"
 	"github.com/rancher/rancher/pkg/ref"
+	"github.com/rancher/rancher/pkg/systemaccount"
 	corev1 "github.com/rancher/types/apis/core/v1"
 	mgmtv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
@@ -28,51 +31,66 @@ import (
 )
 
 const (
-	helmTokenPrefix = "helm-token-"
-	description     = "token for helm chart deployment"
-	AppIDsLabel     = "cattle.io/appIds"
+	helmTokenPrefix           = "helm-token-"
+	description               = "token for helm chart deployment"
+	AppIDsLabel               = "cattle.io/appIds"
+	creatorIDAnn              = "field.cattle.io/creatorId"
+	MultiClusterAppIDSelector = "mcapp"
+	projectIDFieldLabel       = "field.cattle.io/projectId"
 )
 
-func Register(user *config.UserContext, kubeConfigGetter common.KubeConfigGetter) {
+func Register(ctx context.Context, user *config.UserContext, kubeConfigGetter common.KubeConfigGetter) {
 	appClient := user.Management.Project.Apps("")
 	stackLifecycle := &Lifecycle{
 		KubeConfigGetter:      kubeConfigGetter,
+		SystemAccountManager:  systemaccount.NewManager(user.Management),
 		TokenClient:           user.Management.Management.Tokens(""),
 		UserClient:            user.Management.Management.Users(""),
 		UserManager:           user.Management.UserManager,
 		K8sClient:             user.K8sClient,
-		TemplateVersionClient: user.Management.Management.TemplateVersions(""),
+		TemplateVersionClient: user.Management.Management.CatalogTemplateVersions(""),
+		TemplateClient:        user.Management.Management.CatalogTemplates(""),
+		CatalogLister:         user.Management.Management.Catalogs("").Controller().Lister(),
+		ClusterCatalogLister:  user.Management.Management.ClusterCatalogs("").Controller().Lister(),
+		ProjectCatalogLister:  user.Management.Management.ProjectCatalogs("").Controller().Lister(),
 		ListenConfigClient:    user.Management.Management.ListenConfigs(""),
 		ClusterName:           user.ClusterName,
-		TemplateContentClient: user.Management.Management.TemplateContents(""),
 		AppRevisionGetter:     user.Management.Project,
 		AppGetter:             user.Management.Project,
+		NsLister:              user.Core.Namespaces("").Controller().Lister(),
 		NsClient:              user.Core.Namespaces(""),
 	}
-	appClient.AddClusterScopedLifecycle("helm-controller", user.ClusterName, stackLifecycle)
+	appClient.AddClusterScopedLifecycle(ctx, "helm-controller", user.ClusterName, stackLifecycle)
+
+	StartStateCalculator(ctx, user)
 }
 
 type Lifecycle struct {
 	KubeConfigGetter      common.KubeConfigGetter
+	SystemAccountManager  *systemaccount.Manager
 	UserManager           user.Manager
 	TokenClient           mgmtv3.TokenInterface
 	UserClient            mgmtv3.UserInterface
-	TemplateVersionClient mgmtv3.TemplateVersionInterface
+	TemplateVersionClient mgmtv3.CatalogTemplateVersionInterface
+	TemplateClient        mgmtv3.CatalogTemplateInterface
+	CatalogLister         mgmtv3.CatalogLister
+	ClusterCatalogLister  mgmtv3.ClusterCatalogLister
+	ProjectCatalogLister  mgmtv3.ProjectCatalogLister
 	K8sClient             kubernetes.Interface
 	ListenConfigClient    mgmtv3.ListenConfigInterface
 	ClusterName           string
-	TemplateContentClient mgmtv3.TemplateContentInterface
 	AppRevisionGetter     v3.AppRevisionsGetter
 	AppGetter             v3.AppsGetter
+	NsLister              corev1.NamespaceLister
 	NsClient              corev1.NamespaceInterface
 }
 
-func (l *Lifecycle) Create(obj *v3.App) (*v3.App, error) {
+func (l *Lifecycle) Create(obj *v3.App) (runtime.Object, error) {
 	v3.AppConditionMigrated.True(obj)
 	return obj, nil
 }
 
-func (l *Lifecycle) Updated(obj *v3.App) (*v3.App, error) {
+func (l *Lifecycle) Updated(obj *v3.App) (runtime.Object, error) {
 	if obj.Spec.ExternalID == "" && len(obj.Spec.Files) == 0 {
 		return obj, nil
 	}
@@ -98,13 +116,49 @@ func (l *Lifecycle) Updated(obj *v3.App) (*v3.App, error) {
 			return nil, err
 		}
 		if obj.Spec.ExternalID != "" {
-			if currentRevision.Status.ExternalID == obj.Spec.ExternalID && reflect.DeepEqual(currentRevision.Status.Answers, obj.Spec.Answers) {
+			if currentRevision.Status.ExternalID == obj.Spec.ExternalID && reflect.DeepEqual(currentRevision.Status.Answers, obj.Spec.Answers) && reflect.DeepEqual(currentRevision.Status.ValuesYaml, obj.Spec.ValuesYaml) {
+				if !v3.AppConditionForceUpgrade.IsTrue(obj) {
+					v3.AppConditionForceUpgrade.True(obj)
+				}
 				return obj, nil
 			}
 		}
 		if obj.Status.AppliedFiles != nil {
-			if reflect.DeepEqual(obj.Status.AppliedFiles, obj.Spec.Files) && reflect.DeepEqual(currentRevision.Status.Answers, obj.Spec.Answers) {
+			if reflect.DeepEqual(obj.Status.AppliedFiles, obj.Spec.Files) && reflect.DeepEqual(currentRevision.Status.Answers, obj.Spec.Answers) && reflect.DeepEqual(currentRevision.Status.ValuesYaml, obj.Spec.ValuesYaml) {
+				if !v3.AppConditionForceUpgrade.IsTrue(obj) {
+					v3.AppConditionForceUpgrade.True(obj)
+				}
 				return obj, nil
+			}
+		}
+	}
+	created := false
+	if obj.Spec.MultiClusterAppName != "" {
+		if _, err := l.NsLister.Get("", obj.Spec.TargetNamespace); err != nil && !errors.IsNotFound(err) {
+			return obj, err
+		} else if err != nil && errors.IsNotFound(err) {
+			n := v1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: obj.Spec.TargetNamespace,
+					Labels: map[string]string{
+						projectIDFieldLabel:       obj.Namespace,
+						MultiClusterAppIDSelector: obj.Spec.MultiClusterAppName},
+					Annotations: map[string]string{
+						projectIDFieldLabel: fmt.Sprintf("%s:%s", l.ClusterName, obj.Namespace),
+						creatorIDAnn:        obj.Annotations[creatorIDAnn],
+						AppIDsLabel:         obj.Name},
+				},
+			}
+			ns, err := l.NsClient.Create(&n)
+			if err != nil {
+				if !errors.IsAlreadyExists(err) {
+					return obj, err
+				}
+				if ns.DeletionTimestamp != nil {
+					return obj, fmt.Errorf("waiting for namespace %s to be terminated", obj.Namespace)
+				}
+			} else if err == nil {
+				created = true
 			}
 		}
 	}
@@ -112,10 +166,20 @@ func (l *Lifecycle) Updated(obj *v3.App) (*v3.App, error) {
 	if err != nil {
 		return result, err
 	}
+	if !v3.AppConditionForceUpgrade.IsTrue(obj) {
+		v3.AppConditionForceUpgrade.True(obj)
+	}
 	ns, err := l.NsClient.Get(obj.Spec.TargetNamespace, metav1.GetOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		return result, err
-	} else if errors.IsNotFound(err) {
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return result, err
+		}
+		if obj.Spec.MultiClusterAppName != "" {
+			return obj, fmt.Errorf("namespace not found after app creation %s", obj.Name)
+		}
+		return result, nil
+	}
+	if created {
 		return result, nil
 	}
 	if ns.Annotations[AppIDsLabel] == "" {
@@ -141,13 +205,22 @@ func (l *Lifecycle) Updated(obj *v3.App) (*v3.App, error) {
 }
 
 func (l *Lifecycle) DeployApp(obj *v3.App) (*v3.App, error) {
+	obj = obj.DeepCopy()
+	var err error
+	if !v3.AppConditionInstalled.IsUnknown(obj) {
+		v3.AppConditionInstalled.Unknown(obj)
+		obj, err = l.AppGetter.Apps("").Update(obj)
+		if err != nil {
+			return obj, err
+		}
+	}
 	newObj, err := v3.AppConditionInstalled.Do(obj, func() (runtime.Object, error) {
-		template, notes, tempDir, err := generateTemplates(obj, l.TemplateVersionClient, l.TemplateContentClient)
+		template, notes, appDir, tempDir, err := l.generateTemplates(obj)
 		defer os.RemoveAll(tempDir)
 		if err != nil {
 			return obj, err
 		}
-		if err := l.Run(obj, template, tempDir, notes); err != nil {
+		if err := l.Run(obj, template, appDir, notes); err != nil {
 			return obj, err
 		}
 		return obj, nil
@@ -155,7 +228,7 @@ func (l *Lifecycle) DeployApp(obj *v3.App) (*v3.App, error) {
 	return newObj.(*v3.App), err
 }
 
-func (l *Lifecycle) Remove(obj *v3.App) (*v3.App, error) {
+func (l *Lifecycle) Remove(obj *v3.App) (runtime.Object, error) {
 	_, projectName := ref.Parse(obj.Spec.ProjectName)
 	appRevisionClient := l.AppRevisionGetter.AppRevisions(projectName)
 	revisions, err := appRevisionClient.List(metav1.ListOptions{
@@ -174,17 +247,17 @@ func (l *Lifecycle) Remove(obj *v3.App) (*v3.App, error) {
 		return obj, err
 	}
 	defer os.RemoveAll(tempDir)
-	kubeConfigPath, err := l.writeKubeConfig(obj, tempDir)
+	kubeConfigPath, err := l.writeKubeConfig(obj, tempDir, true)
 	if err != nil {
 		return obj, err
 	}
 	// try three times and succeed
 	start := time.Second * 1
 	for i := 0; i < 3; i++ {
-		if err := helmDelete(kubeConfigPath, obj); err == nil {
+		if err = helmDelete(kubeConfigPath, obj); err == nil {
 			break
 		}
-		logrus.Error(err)
+		logrus.Warn(err)
 		time.Sleep(start)
 		start *= 2
 	}
@@ -193,6 +266,13 @@ func (l *Lifecycle) Remove(obj *v3.App) (*v3.App, error) {
 		return obj, err
 	} else if errors.IsNotFound(err) {
 		return obj, nil
+	}
+	if val, ok := ns.Labels[MultiClusterAppIDSelector]; ok && val == obj.Spec.MultiClusterAppName {
+		err := l.NsClient.Delete(ns.Name, &metav1.DeleteOptions{})
+		if errors.IsNotFound(err) {
+			return obj, nil
+		}
+		return obj, err
 	}
 	appIds := strings.Split(ns.Annotations[AppIDsLabel], ",")
 	appAnno := ""
@@ -220,7 +300,7 @@ func (l *Lifecycle) Run(obj *v3.App, template, templateDir, notes string) error 
 		return err
 	}
 	defer os.RemoveAll(tempDir)
-	kubeConfigPath, err := l.writeKubeConfig(obj, tempDir)
+	kubeConfigPath, err := l.writeKubeConfig(obj, tempDir, false)
 	if err != nil {
 		return err
 	}
@@ -244,20 +324,14 @@ func (l *Lifecycle) createAppRevision(obj *v3.App, template, notes string, faile
 	release.Status.Answers = obj.Spec.Answers
 	release.Status.ProjectName = projectName
 	release.Status.ExternalID = obj.Spec.ExternalID
+	release.Status.ValuesYaml = obj.Spec.ValuesYaml
+	release.Status.Files = obj.Spec.Files
+
 	digest := sha256.New()
 	digest.Write([]byte(template))
 	tag := hex.EncodeToString(digest.Sum(nil))
-	if _, err := l.TemplateContentClient.Get(tag, metav1.GetOptions{}); errors.IsNotFound(err) {
-		tc := &mgmtv3.TemplateContent{}
-		tc.Name = tag
-		tc.Data = template
-		if _, err := l.TemplateContentClient.Create(tc); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	}
 	release.Status.Digest = tag
+
 	createdRevision, err := appRevisionClient.Create(release)
 	if err != nil {
 		return err
@@ -270,13 +344,18 @@ func (l *Lifecycle) createAppRevision(obj *v3.App, template, notes string, faile
 	return err
 }
 
-func (l *Lifecycle) writeKubeConfig(obj *v3.App, tempDir string) (string, error) {
+func (l *Lifecycle) writeKubeConfig(obj *v3.App, tempDir string, remove bool) (string, error) {
+	var token string
+
 	userID := obj.Annotations["field.cattle.io/creatorId"]
 	user, err := l.UserClient.Get(userID, metav1.GetOptions{})
-	if err != nil {
+	if err != nil && !errors.IsNotFound(err) {
 		return "", err
+	} else if errors.IsNotFound(err) && remove {
+		token, err = l.SystemAccountManager.GetOrCreateProjectSystemToken(obj.Namespace)
+	} else if err == nil {
+		token, err = l.UserManager.EnsureToken(helmTokenPrefix+user.Name, description, user.Name)
 	}
-	token, err := l.UserManager.EnsureToken(helmTokenPrefix+user.Name, description, user.Name)
 	if err != nil {
 		return "", err
 	}

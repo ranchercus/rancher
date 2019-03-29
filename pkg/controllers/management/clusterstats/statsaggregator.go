@@ -1,8 +1,11 @@
 package clusterstats
 
 import (
+	"context"
 	"reflect"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/rancher/rancher/pkg/clustermanager"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
@@ -27,7 +30,7 @@ type ClusterNodeData struct {
 	ConditionNoMemoryPressureStatus v1.ConditionStatus
 }
 
-func Register(management *config.ManagementContext, clusterManager *clustermanager.Manager) {
+func Register(ctx context.Context, management *config.ManagementContext, clusterManager *clustermanager.Manager) {
 	clustersClient := management.Management.Clusters("")
 	machinesClient := management.Management.Nodes("")
 
@@ -37,16 +40,16 @@ func Register(management *config.ManagementContext, clusterManager *clustermanag
 		ClusterManager: clusterManager,
 	}
 
-	clustersClient.AddHandler("cluster-stats", s.sync)
-	machinesClient.AddHandler("cluster-stats", s.machineChanged)
+	clustersClient.AddHandler(ctx, "cluster-stats", s.sync)
+	machinesClient.AddHandler(ctx, "cluster-stats", s.machineChanged)
 }
 
-func (s *StatsAggregator) sync(key string, cluster *v3.Cluster) error {
+func (s *StatsAggregator) sync(key string, cluster *v3.Cluster) (runtime.Object, error) {
 	if cluster == nil {
-		return nil
+		return nil, nil
 	}
 
-	return s.aggregate(cluster, cluster.Name)
+	return nil, s.aggregate(cluster, cluster.Name)
 }
 
 func (s *StatsAggregator) aggregate(cluster *v3.Cluster, clusterName string) error {
@@ -209,9 +212,9 @@ func callWithTimeout(do func()) {
 	}
 }
 
-func (s *StatsAggregator) machineChanged(key string, machine *v3.Node) error {
+func (s *StatsAggregator) machineChanged(key string, machine *v3.Node) (runtime.Object, error) {
 	if machine != nil {
 		s.Clusters.Controller().Enqueue("", machine.Namespace)
 	}
-	return nil
+	return nil, nil
 }

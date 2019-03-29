@@ -3,13 +3,14 @@ from .test_catalog import wait_for_template_to_be_created
 import time
 
 
-def test_app_mysql(admin_pc):
+def test_app_mysql(admin_pc, admin_mc):
     client = admin_pc.client
     name = random_str()
 
     ns = admin_pc.cluster.client.create_namespace(name=random_str(),
                                                   projectId=admin_pc.
                                                   project.id)
+    wait_for_template_to_be_created(admin_mc.client, "library")
     answers = {
         "defaultImage": "true",
         "image": "mysql",
@@ -26,7 +27,8 @@ def test_app_mysql(admin_pc):
     }
     client.create_app(
         name=name,
-        externalId="catalog://?catalog=library&template=mysql&version=0.3.7",
+        externalId="catalog://?catalog=library&template=mysql&version=0.3.7&"
+                   "namespace=cattle-global-data",
         targetNamespace=ns.name,
         projectId=admin_pc.project.id,
         answers=answers
@@ -34,14 +36,14 @@ def test_app_mysql(admin_pc):
     wait_for_workload(client, ns.name, count=1)
 
 
-def test_app_wordpress(admin_pc):
+def test_app_wordpress(admin_pc, admin_mc):
     client = admin_pc.client
     name = random_str()
 
     ns = admin_pc.cluster.client.create_namespace(name=random_str(),
                                                   projectId=admin_pc.
                                                   project.id)
-
+    wait_for_template_to_be_created(admin_mc.client, "library")
     answers = {
         "defaultImage": "true",
         "externalDatabase.database": "",
@@ -72,7 +74,8 @@ def test_app_wordpress(admin_pc):
         "wordpressPassword": "",
         "wordpressUsername": "user"
     }
-    external_id = "catalog://?catalog=library&template=wordpress&version=1.0.5"
+    external_id = "catalog://?catalog=library&template=wordpress" \
+                  "&version=1.0.5&namespace=cattle-global-data"
     client.create_app(
         name=name,
         externalId=external_id,
@@ -97,7 +100,8 @@ def test_prehook_chart(admin_pc, admin_mc):
                                              )
     wait_for_template_to_be_created(admin_mc.client, catalog.name)
     external_id = "catalog://?catalog=" + \
-                  catalog.name + "&template=busybox&version=0.0.2"
+                  catalog.name + "&template=busybox&version=0.0.2" \
+                                 "&namespace=cattle-global-data"
     client.create_app(
         name=name,
         externalId=external_id,
@@ -112,20 +116,23 @@ def test_prehook_chart(admin_pc, admin_mc):
     assert len(jobs) == 1
 
 
-def test_app_namespace_annotation(admin_pc):
+def test_app_namespace_annotation(admin_pc, admin_mc):
     client = admin_pc.client
     ns = admin_pc.cluster.client.create_namespace(name=random_str(),
                                                   projectId=admin_pc.
                                                   project.id)
+    wait_for_template_to_be_created(admin_mc.client, "library")
     app1 = client.create_app(
         name=random_str(),
-        externalId="catalog://?catalog=library&template=mysql&version=0.3.7",
+        externalId="catalog://?catalog=library&template=mysql&version=0.3.7"
+                   "&namespace=cattle-global-data",
         targetNamespace=ns.name,
         projectId=admin_pc.project.id,
     )
     wait_for_workload(client, ns.name, count=1)
 
-    external_id = "catalog://?catalog=library&template=wordpress&version=1.0.5"
+    external_id = "catalog://?catalog=library&template=wordpress" \
+                  "&version=1.0.5&namespace=cattle-global-data"
     app2 = client.create_app(
         name=random_str(),
         externalId=external_id,
@@ -134,8 +141,8 @@ def test_app_namespace_annotation(admin_pc):
     )
     wait_for_workload(client, ns.name, count=3)
     ns = admin_pc.cluster.client.reload(ns)
-    assert app1.name in ns.annotations['cattle.io/appIds']
-    assert app2.name in ns.annotations['cattle.io/appIds']
+    ns = wait_for_app_annotation(admin_pc, ns, app1.name)
+    ns = wait_for_app_annotation(admin_pc, ns, app2.name)
     client.delete(app1)
     wait_for_app_to_be_deleted(client, app1)
 
@@ -149,17 +156,74 @@ def test_app_namespace_annotation(admin_pc):
     assert 'cattle.io/appIds' not in ns.annotations
 
 
+def wait_for_app_annotation(admin_pc, ns, app_name, timeout=60):
+    start = time.time()
+    interval = 0.5
+    ns = admin_pc.cluster.client.reload(ns)
+    while app_name not in ns.annotations['cattle.io/appIds']:
+        if time.time() - start > timeout:
+            print(ns.annotations)
+            raise Exception('Timeout waiting for app annotation')
+        time.sleep(interval)
+        interval *= 2
+        ns = admin_pc.cluster.client.reload(ns)
+    return ns
+
+
+def test_app_custom_values_file(admin_pc, admin_mc):
+    client = admin_pc.client
+    ns = admin_pc.cluster.client.create_namespace(name=random_str(),
+                                                  projectId=admin_pc.
+                                                  project.id)
+    wait_for_template_to_be_created(admin_mc.client, "library")
+    values_yaml = "replicaCount: 2\r\nimage:\r\n  " \
+                  "repository: registry\r\n  tag: 2.7"
+    answers = {
+        "image.tag": "2.6"
+    }
+    app = client.create_app(
+        name=random_str(),
+        externalId="catalog://?catalog=library&template=docker-registry"
+                   "&version=1.6.1&namespace=cattle-global-data",
+        targetNamespace=ns.name,
+        projectId=admin_pc.project.id,
+        valuesYaml=values_yaml,
+        answers=answers
+    )
+    workloads = wait_for_workload(client, ns.name, count=1)
+    workloads = wait_for_replicas(client, ns.name, count=2)
+    print(workloads)
+    assert workloads.data[0].deploymentStatus.unavailableReplicas == 2
+    assert workloads.data[0].containers[0].image == "registry:2.6"
+    client.delete(app)
+    wait_for_app_to_be_deleted(client, app)
+
+
 def wait_for_workload(client, ns, timeout=60, count=0):
     start = time.time()
     interval = 0.5
     workloads = client.list_workload(namespaceId=ns)
     while len(workloads.data) != count:
-        workloads = client.list_workload(namespaceId=ns)
-        time.sleep(interval)
         if time.time() - start > timeout:
             print(workloads)
             raise Exception('Timeout waiting for workload service')
+        time.sleep(interval)
         interval *= 2
+        workloads = client.list_workload(namespaceId=ns)
+    return workloads
+
+
+def wait_for_replicas(client, ns, timeout=60, count=0):
+    start = time.time()
+    interval = 0.5
+    workloads = client.list_workload(namespaceId=ns)
+    while workloads.data[0].deploymentStatus.replicas != count:
+        if time.time() - start > timeout:
+            print(workloads)
+            raise Exception('Timeout waiting for workload replicas')
+        time.sleep(interval)
+        interval *= 2
+        workloads = client.list_workload(namespaceId=ns)
     return workloads
 
 

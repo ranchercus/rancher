@@ -8,35 +8,38 @@ import (
 
 	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
-
 	"github.com/rancher/norman/types"
+	"github.com/rancher/rancher/pkg/api/store/auth"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/tokens"
+	corev1 "github.com/rancher/types/apis/core/v1"
 	"github.com/rancher/types/apis/management.cattle.io/v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/rancher/types/apis/management.cattle.io/v3public"
+	"github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/config"
 	"github.com/rancher/types/user"
+	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
-	OpenLdapName       = "openldap"
-	FreeIpaName        = "freeipa"
-	OpenLdapUserScope  = OpenLdapName + "_user"
-	OpenLdapGroupScope = OpenLdapName + "_group"
-	FreeIpaUserScope   = FreeIpaName + "_user"
-	FreeIpaGroupScope  = FreeIpaName + "_group"
-	ObjectClass        = "objectClass"
+	OpenLdapName = "openldap"
+	FreeIpaName  = "freeipa"
+	ObjectClass  = "objectClass"
 )
 
-var openLdapScopes = []string{OpenLdapUserScope, OpenLdapGroupScope}
-var freeIpaScopes = []string{FreeIpaUserScope, FreeIpaGroupScope}
+var (
+	testAndApplyInputTypes = map[string]string{
+		FreeIpaName:  client.FreeIpaTestAndApplyInputType,
+		OpenLdapName: client.OpenLdapTestAndApplyInputType,
+	}
+)
 
 type ldapProvider struct {
 	ctx                   context.Context
 	authConfigs           v3.AuthConfigInterface
+	secrets               corev1.SecretInterface
 	userMGR               user.Manager
 	tokenMGR              *tokens.Manager
 	certs                 string
@@ -47,16 +50,18 @@ type ldapProvider struct {
 	groupScope            string
 }
 
-func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.Manager, tokenMGR *tokens.Manager, providerName string, testAndApplyInputType string, userScope string, groupScope string) common.AuthProvider {
+func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.Manager, tokenMGR *tokens.Manager, providerName string) common.AuthProvider {
 	return &ldapProvider{
 		ctx:                   ctx,
 		authConfigs:           mgmtCtx.Management.AuthConfigs(""),
+		secrets:               mgmtCtx.Core.Secrets(""),
 		userMGR:               userMGR,
 		tokenMGR:              tokenMGR,
 		providerName:          providerName,
-		testAndApplyInputType: testAndApplyInputType,
-		userScope:             userScope,
-		groupScope:            groupScope}
+		testAndApplyInputType: testAndApplyInputTypes[providerName],
+		userScope:             providerName + "_user",
+		groupScope:            providerName + "_group",
+	}
 }
 
 func (p *ldapProvider) GetName() string {
@@ -132,12 +137,10 @@ func (p *ldapProvider) GetPrincipal(principalID string, token v3.Token) (v3.Prin
 		return v3.Principal{}, nil
 	}
 
-	parts := strings.SplitN(principalID, ":", 2)
-	if len(parts) != 2 {
-		return v3.Principal{}, errors.Errorf("invalid id %v", principalID)
+	externalID, scope, err := p.getDNAndScopeFromPrincipalID(principalID)
+	if err != nil {
+		return v3.Principal{}, err
 	}
-	scope := parts[0]
-	externalID := strings.TrimPrefix(parts[1], "//")
 
 	principal, err := p.getPrincipal(externalID, scope, config, caPool)
 	if err != nil {
@@ -200,6 +203,15 @@ func (p *ldapProvider) getLDAPConfig() (*v3.LdapConfig, *x509.CertPool, error) {
 		p.caPool = pool
 	}
 
+	if storedLdapConfig.ServiceAccountPassword != "" {
+		value, err := common.ReadFromSecret(p.secrets, storedLdapConfig.ServiceAccountPassword,
+			strings.ToLower(auth.TypeToField[client.OpenLdapConfigType]))
+		if err != nil {
+			return nil, nil, err
+		}
+		storedLdapConfig.ServiceAccountPassword = value
+	}
+
 	return storedLdapConfig, p.caPool, nil
 }
 
@@ -210,4 +222,27 @@ func newCAPool(cert string) (*x509.CertPool, error) {
 	}
 	pool.AppendCertsFromPEM([]byte(cert))
 	return pool, nil
+}
+
+func (p *ldapProvider) CanAccessWithGroupProviders(userPrincipalID string, groupPrincipals []v3.Principal) (bool, error) {
+	config, _, err := p.getLDAPConfig()
+	if err != nil {
+		logrus.Errorf("Error fetching ldap config: %v", err)
+		return false, err
+	}
+	allowed, err := p.userMGR.CheckAccess(config.AccessMode, config.AllowedPrincipalIDs, userPrincipalID, groupPrincipals)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
+}
+
+func (p *ldapProvider) getDNAndScopeFromPrincipalID(principalID string) (string, string, error) {
+	parts := strings.SplitN(principalID, ":", 2)
+	if len(parts) != 2 {
+		return "", "", errors.Errorf("invalid id %v", principalID)
+	}
+	scope := parts[0]
+	externalID := strings.TrimPrefix(parts[1], "//")
+	return externalID, scope, nil
 }

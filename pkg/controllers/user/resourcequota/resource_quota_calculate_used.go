@@ -3,6 +3,8 @@ package resourcequota
 import (
 	"reflect"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"fmt"
 
 	namespaceutil "github.com/rancher/rancher/pkg/namespace"
@@ -25,23 +27,23 @@ type calculateLimitController struct {
 	clusterName   string
 }
 
-func (c *calculateLimitController) calculateResourceQuotaUsed(key string, ns *corev1.Namespace) error {
+func (c *calculateLimitController) calculateResourceQuotaUsed(key string, ns *corev1.Namespace) (runtime.Object, error) {
 	if ns == nil {
-		return nil
+		return nil, nil
 	}
 	projectID := getProjectID(ns)
 	if projectID == "" {
-		return nil
+		return nil, nil
 	}
-	return c.calculateProjectResourceQuota(projectID)
+	return nil, c.calculateProjectResourceQuota(projectID)
 }
 
-func (c *calculateLimitController) calculateResourceQuotaUsedProject(key string, p *v3.Project) error {
+func (c *calculateLimitController) calculateResourceQuotaUsedProject(key string, p *v3.Project) (runtime.Object, error) {
 	if p == nil || p.DeletionTimestamp != nil {
-		return nil
+		return nil, nil
 	}
 
-	return c.calculateProjectResourceQuota(fmt.Sprintf("%s:%s", c.clusterName, p.Name))
+	return nil, c.calculateProjectResourceQuota(fmt.Sprintf("%s:%s", c.clusterName, p.Name))
 }
 
 func (c *calculateLimitController) calculateProjectResourceQuota(projectID string) error {
@@ -61,14 +63,14 @@ func (c *calculateLimitController) calculateProjectResourceQuota(projectID strin
 		if ns.DeletionTimestamp != nil {
 			continue
 		}
-		set, err := namespaceutil.IsNamespaceConditionSet(ns, resourceQuotaValidatedCondition, true)
+		set, err := namespaceutil.IsNamespaceConditionSet(ns, ResourceQuotaValidatedCondition, true)
 		if err != nil {
 			return err
 		}
 		if !set {
 			continue
 		}
-		nsLimit, err := getNamespaceLimit(ns)
+		nsLimit, err := getNamespaceResourceQuotaLimit(ns)
 		if err != nil {
 			return err
 		}

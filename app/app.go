@@ -2,16 +2,16 @@ package app
 
 import (
 	"context"
-
-	"github.com/rancher/kontainer-engine/service"
 	"github.com/rancher/norman/leader"
+	"github.com/rancher/norman/pkg/k8scheck"
 	"github.com/rancher/rancher/pkg/audit"
+	"github.com/rancher/rancher/pkg/auth/providerrefresh"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
 	"github.com/rancher/rancher/pkg/auth/tokens"
 	"github.com/rancher/rancher/pkg/clustermanager"
 	managementController "github.com/rancher/rancher/pkg/controllers/management"
 	"github.com/rancher/rancher/pkg/dialer"
-	"github.com/rancher/rancher/pkg/k8scheck"
+	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rancher/pkg/telemetry"
 	"github.com/rancher/rancher/pkg/tls"
 	"github.com/rancher/rancher/pkg/tunnelserver"
@@ -47,7 +47,7 @@ func buildScaledContext(ctx context.Context, kubeConfig rest.Config, cfg *Config
 	}
 	scaledContext.LocalConfig = &kubeConfig
 
-	cfg.ListenConfig, err = tls.ReadTLSConfig(cfg.ACMEDomains)
+	cfg.ListenConfig, err = tls.ReadTLSConfig(cfg.ACMEDomains, cfg.NoCACerts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -62,7 +62,7 @@ func buildScaledContext(ctx context.Context, kubeConfig rest.Config, cfg *Config
 	}
 
 	scaledContext.Dialer = dialerFactory
-	scaledContext.PeerManager, err = tunnelserver.NewPeerManager(scaledContext, dialerFactory.TunnelServer)
+	scaledContext.PeerManager, err = tunnelserver.NewPeerManager(ctx, scaledContext, dialerFactory.TunnelServer)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -82,10 +82,6 @@ func buildScaledContext(ctx context.Context, kubeConfig rest.Config, cfg *Config
 }
 
 func Run(ctx context.Context, kubeConfig rest.Config, cfg *Config) error {
-	if err := service.Start(); err != nil {
-		return err
-	}
-
 	scaledContext, clusterManager, err := buildScaledContext(ctx, kubeConfig, cfg)
 	if err != nil {
 		return err
@@ -93,7 +89,7 @@ func Run(ctx context.Context, kubeConfig rest.Config, cfg *Config) error {
 
 	auditLogWriter := audit.NewLogWriter(cfg.AuditLogPath, cfg.AuditLevel, cfg.AuditLogMaxage, cfg.AuditLogMaxbackup, cfg.AuditLogMaxsize)
 
-	if err := server.Start(ctx, cfg.HTTPListenPort, cfg.HTTPSListenPort, scaledContext, clusterManager, auditLogWriter); err != nil {
+	if err := server.Start(ctx, cfg.HTTPListenPort, cfg.HTTPSListenPort, localClusterEnabled(*cfg), scaledContext, clusterManager, auditLogWriter); err != nil {
 		return err
 	}
 
@@ -125,6 +121,9 @@ func Run(ctx context.Context, kubeConfig rest.Config, cfg *Config) error {
 		}
 
 		tokens.StartPurgeDaemon(ctx, management)
+		cronTime := settings.AuthUserInfoResyncCron.Get()
+		maxAge := settings.AuthUserInfoMaxAgeSeconds.Get()
+		providerrefresh.StartRefreshDaemon(ctx, scaledContext, management, cronTime, maxAge)
 		logrus.Infof("Rancher startup complete")
 
 		<-ctx.Done()
@@ -148,7 +147,7 @@ func addData(management *config.ManagementContext, cfg Config) error {
 		return err
 	}
 
-	if cfg.AddLocal == "true" || (cfg.AddLocal == "auto" && !cfg.Embedded) {
+	if localClusterEnabled(cfg) {
 		if err := addLocalCluster(cfg.Embedded, adminName, management); err != nil {
 			return err
 		}
@@ -174,5 +173,20 @@ func addData(management *config.ManagementContext, cfg Config) error {
 		return err
 	}
 
+	if err := addKontainerDrivers(management); err != nil {
+		return err
+	}
+
+	if err := addCattleGlobalNamespace(management); err != nil {
+		return err
+	}
+
 	return addMachineDrivers(management)
+}
+
+func localClusterEnabled(cfg Config) bool {
+	if cfg.AddLocal == "true" || (cfg.AddLocal == "auto" && !cfg.Embedded) {
+		return true
+	}
+	return false
 }
