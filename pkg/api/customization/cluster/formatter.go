@@ -6,7 +6,7 @@ import (
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
 	"github.com/rancher/norman/types/values"
-	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 )
 
@@ -71,16 +71,6 @@ func (f *Formatter) Formatter(request *types.APIContext, resource *types.RawReso
 
 		setTrueIfNil(configMap, "associateWorkerNodePublicIp")
 		setIntIfNil(configMap, "nodeVolumeSize", 20)
-	}
-
-	if eksConfig, ok := resource.Values[client.ClusterSpecFieldAmazonElasticContainerServiceConfig]; ok {
-		configMap, ok := eksConfig.(map[string]interface{})
-		if !ok {
-			logrus.Errorf("could not convert aks config to map")
-			return
-		}
-
-		setTrueIfNil(configMap, client.AmazonElasticContainerServiceConfigFieldAssociateWorkerNodePublicIP)
 	}
 }
 

@@ -384,15 +384,6 @@ func (d *Driver) RemoveLegacyServiceAccount(ctx context.Context, info *types.Clu
 	return util.DeleteLegacyServiceAccountAndRoleBinding(clientset)
 }
 
-func (d *Driver) RemoveLegacyServiceAccount(ctx context.Context, info *types.ClusterInfo) error {
-	clientset, err := d.getClientset(info)
-	if err != nil {
-		return err
-	}
-
-	return util.DeleteLegacyServiceAccountAndRoleBinding(clientset)
-}
-
 func (d *Driver) restore(info *types.ClusterInfo) (string, error) {
 	os.MkdirAll(rancherPath, 0700)
 	dir, err := ioutil.TempDir(rancherPath, "rke-")

@@ -2,6 +2,9 @@ package pipelineexecution
 
 import (
 	"context"
+	"fmt"
+	"github.com/rancher/rancher/pkg/settings"
+	"strings"
 	"time"
 
 	"github.com/rancher/norman/controller"
@@ -9,6 +12,7 @@ import (
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/ticker"
+	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,6 +35,7 @@ type ExecutionStateSyncer struct {
 	pipelineExecutionLister v3.PipelineExecutionLister
 	pipelineExecutions      v3.PipelineExecutionInterface
 	pipelineEngine          engine.PipelineEngine
+	projectLister           mv3.ProjectLister
 }
 
 func (s *ExecutionStateSyncer) sync(ctx context.Context, syncInterval time.Duration) {
@@ -99,6 +104,28 @@ func (s *ExecutionStateSyncer) checkAndRun(execution *v3.PipelineExecution) {
 	}
 	if ready {
 		e := execution.DeepCopy()
+		projectName := e.Spec.ProjectName
+		cluster, name := ref.Parse(projectName)
+		project, err := s.projectLister.Get(cluster, name)
+		if err != nil {
+			logrus.Error(err)
+		} else {
+			for _, stage := range e.Spec.PipelineConfig.Stages {
+				for _, step := range stage.Steps {
+					pstep := &step
+					if pstep.PublishImageConfig != nil {
+						if pstep.PublishImageConfig.Registry == settings.DefaultPipelineRegistry.Get() {
+							if strings.IndexRune(pstep.PublishImageConfig.Tag, '/') == -1 {
+								pstep.PublishImageConfig.Tag = fmt.Sprintf("%s/%s", strings.ToLower(project.Spec.DisplayName), pstep.PublishImageConfig.Tag)
+							}
+							if strings.IndexRune(pstep.PublishImageConfig.Tag, ':') == -1 {
+								pstep.PublishImageConfig.Tag = fmt.Sprintf("%s:${%s}", pstep.PublishImageConfig.Tag, utils.EnvImageTag)
+							}
+						}
+					}
+				}
+			}
+		}
 		if err := s.pipelineEngine.RunPipelineExecution(e); err != nil {
 			v3.PipelineExecutionConditionProvisioned.False(e)
 			v3.PipelineExecutionConditionProvisioned.ReasonAndMessageFromError(e, err)

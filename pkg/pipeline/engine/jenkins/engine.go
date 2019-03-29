@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"github.com/rancher/rancher/pkg/settings"
+	"k8s.io/client-go/tools/cache"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -20,6 +22,7 @@ import (
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/types/apis/apps/v1beta2"
 	"github.com/rancher/types/apis/core/v1"
+	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config/dialer"
 	"github.com/sirupsen/logrus"
@@ -50,8 +53,10 @@ type Engine struct {
 	PipelineLister             v3.PipelineLister
 	PipelineSettingLister      v3.PipelineSettingLister
 
-	ClusterName string
-	Dialer      dialer.Factory
+	ClusterName  string
+	Dialer       dialer.Factory
+	TokenIndexer cache.Indexer
+	UserLister   mv3.UserLister
 }
 
 func (j *Engine) getJenkinsURL(execution *v3.PipelineExecution) (string, error) {
@@ -170,8 +175,14 @@ func (j *Engine) preparePipeline(execution *v3.PipelineExecution) error {
 					_, projectID := ref.Parse(execution.Spec.ProjectName)
 					registry = fmt.Sprintf("%s.%s-pipeline", utils.LocalRegistry, projectID)
 				}
-				if err := j.prepareRegistryCredential(execution, registry); err != nil {
-					return err
+				if registry == settings.DefaultPipelineRegistry.Get() {
+					if err := j.prepareRegistryCredentialForCurrentUser(execution, registry); err != nil {
+						return err
+					}
+				} else {
+					if err := j.prepareRegistryCredential(execution, registry); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -223,6 +234,57 @@ func (j *Engine) prepareRegistryCredential(execution *v3.PipelineExecution, regi
 		Data: map[string][]byte{
 			utils.PublishSecretUserKey: []byte(username),
 			utils.PublishSecretPwKey:   []byte(password),
+		},
+	}
+	_, err = j.Secrets.Create(secret)
+	if apierrors.IsAlreadyExists(err) {
+		if _, err := j.Secrets.Update(secret); err != nil {
+			return err
+		}
+		return nil
+	}
+	return err
+}
+
+func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineExecution, registry string) error {
+	//registry1 := settings.DefaultPipelineRegistry.Get()
+	username := execution.Spec.TriggerUserName
+	objs, err := j.TokenIndexer.ByIndex("authn.management.cattle.io/uid-key-index", username)
+	if err != nil {
+		return err
+	}
+	if len(objs) == 0 {
+		return fmt.Errorf("failed to retrieve auth token from cache")
+	}
+	var storedToken *mv3.Token
+	isExpired := true
+	for _, obj := range objs {
+		storedToken = obj.(*mv3.Token)
+		if !storedToken.Expired {
+			isExpired = false
+			break
+		}
+	}
+	if isExpired {
+		return fmt.Errorf("must authenticate")
+	}
+	user, err := j.UserLister.Get("", storedToken.UserID)
+	if err != nil {
+		return err
+	}
+	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
+	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
+
+	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)
+	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      secretName,
+		},
+		Data: map[string][]byte{
+			utils.PublishSecretUserKey: []byte(user.Username),
+			utils.PublishSecretPwKey:   []byte(fmt.Sprintf("%s:%s", storedToken.Name, storedToken.Token)),
 		},
 	}
 	_, err = j.Secrets.Create(secret)
