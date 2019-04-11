@@ -147,7 +147,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 	processedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 	secretName := fmt.Sprintf("%s-%s", c.execution.Namespace, processedRegistry)
-	if registry == settings.DefaultPipelineRegistry.Get() {
+	if registry == settings.SystemDefaultRegistry.Get() {
 		secretName = fmt.Sprintf("%s-%s-%s", c.execution.Namespace, processedRegistry, c.execution.Spec.TriggerUserName)
 	}
 	secretUserKey := utils.PublishSecretUserKey
@@ -171,7 +171,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 		"PLUGIN_TAG":                 tag,
 		"PLUGIN_DOCKERFILE":          config.DockerfilePath,
 		"PLUGIN_CONTEXT":             config.BuildContext,
-		"PLUGIN_BUILD_FROM_REGISTRY": settings.DefaultPipelineRegistry.Get(),
+		"PLUGIN_BUILD_FROM_REGISTRY": settings.SystemDefaultRegistry.Get(),
 		"PLUGIN_INSECURE":            settings.PipelineRegistryInsecure.Get(),
 	}
 	for k, v := range publishEnv {

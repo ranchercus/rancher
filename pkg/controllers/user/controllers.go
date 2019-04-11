@@ -33,6 +33,7 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/user/systemimage"
 	"github.com/rancher/rancher/pkg/controllers/user/targetworkloadservice"
 	"github.com/rancher/rancher/pkg/controllers/user/workload"
+	"github.com/rancher/rancher/pkg/controllers/user/project"
 	pkgmonitoring "github.com/rancher/rancher/pkg/monitoring"
 	managementv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	projectclient "github.com/rancher/types/client/project/v3"
@@ -67,6 +68,7 @@ func Register(ctx context.Context, cluster *config.UserContext, clusterRec *mana
 	globaldns.Register(ctx, cluster)
 	alert.Register(ctx, cluster)
 	monitoring.Register(ctx, cluster)
+	project.Register(ctx, cluster)
 
 	if clusterRec.Spec.LocalClusterAuthEndpoint.Enabled {
 		err := clusterauthtoken.CRDSetup(ctx, cluster.UserOnlyContext())

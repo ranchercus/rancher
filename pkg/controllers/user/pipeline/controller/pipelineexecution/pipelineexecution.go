@@ -433,6 +433,13 @@ func (l *Lifecycle) doCleanup(obj *v3.PipelineExecution) error {
 			return err
 		}
 	}
+	//Clean engine prepareRegistryCredentialForCurrentUser
+	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
+	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(settings.SystemDefaultRegistry.Get(), ""))
+	secretName := fmt.Sprintf("%s-%s-%s", obj.Namespace, proceccedRegistry, obj.Spec.TriggerUserName)
+	if err := l.secrets.DeleteNamespaced(ns, secretName, &metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsGone(err) {
+		return err
+	}
 	return nil
 }
 

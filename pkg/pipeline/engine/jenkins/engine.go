@@ -175,7 +175,7 @@ func (j *Engine) preparePipeline(execution *v3.PipelineExecution) error {
 					_, projectID := ref.Parse(execution.Spec.ProjectName)
 					registry = fmt.Sprintf("%s.%s-pipeline", utils.LocalRegistry, projectID)
 				}
-				if registry == settings.DefaultPipelineRegistry.Get() {
+				if registry == settings.SystemDefaultRegistry.Get() {
 					if err := j.prepareRegistryCredentialForCurrentUser(execution, registry); err != nil {
 						return err
 					}

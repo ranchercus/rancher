@@ -114,7 +114,7 @@ func (s *ExecutionStateSyncer) checkAndRun(execution *v3.PipelineExecution) {
 				for _, step := range stage.Steps {
 					pstep := &step
 					if pstep.PublishImageConfig != nil {
-						if pstep.PublishImageConfig.Registry == settings.DefaultPipelineRegistry.Get() {
+						if pstep.PublishImageConfig.Registry == settings.SystemDefaultRegistry.Get() {
 							if strings.IndexRune(pstep.PublishImageConfig.Tag, '/') == -1 {
 								pstep.PublishImageConfig.Tag = fmt.Sprintf("%s/%s", strings.ToLower(project.Spec.DisplayName), pstep.PublishImageConfig.Tag)
 							}
