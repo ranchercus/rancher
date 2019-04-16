@@ -3,6 +3,8 @@ package jenkins
 import (
 	"bytes"
 	"fmt"
+	"github.com/rancher/rancher/pkg/settings"
+	"regexp"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -232,6 +234,20 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 				},
 			},
 		},
+	}
+	if settings.PipelineDefaultRegistry.Get() != "" && settings.PipelineRegistryInsecure.Get() == "false" {
+		reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
+		name := fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, strings.ToLower(reg.ReplaceAllString(settings.PipelineDefaultRegistry.Get(), "")))
+		pathType := v1.HostPathUnset
+		pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
+			Name: name,
+			VolumeSource: v1.VolumeSource{
+				HostPath: &v1.HostPathVolumeSource{
+					Path: fmt.Sprintf("/etc/docker/certs.d/%s", settings.PipelineDefaultRegistry.Get()),
+					Type: &pathType,
+				},
+			},
+		})
 	}
 	return pod
 }

@@ -72,7 +72,7 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 		ctx:         ctx,
 	}
 	cluster.Management.Core.Secrets("").AddHandler(ctx, "system-default-registry-handler", sdrHandler.sync)
-	go lifecycle.checkAndAdjust(15*time.Minute, cluster.ClusterName)
+	go lifecycle.checkAndAdjust(1*time.Minute, cluster.ClusterName)
 }
 
 func (p *projectLifecycle) Create(obj *v3.Project) (runtime.Object, error) {
@@ -116,14 +116,27 @@ func (p *projectLifecycle) syncDefaultRegistryCredential(obj *v3.Project) error 
 	if _, err := p.secrets.Create(defaultDockerCredential); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error create credential for default pipeline registry")
 	}
-	projectUser, err := p.getProjectUser(obj.Name, token, obj.Spec.DisplayName)
-	if err != nil {
-		return err
+	users, err := p.userIndexer.ByIndex(userByUsernameIndex, obj.Name)
+	if err == nil && len(users) > 0 {
+		user := users[0].(*v3.User)
+		projectUser, err := p.getProjectUser(user.ObjectMeta.Name, obj.Name, token, obj.Spec.DisplayName)
+		if err != nil {
+			return err
+		}
+		if _, err := p.users.Update(projectUser); err != nil {
+			return errors.Wrapf(err, "Error update user for default pipeline registry")
+		}
+		return nil
+	} else {
+		userId := types.GenerateName("user")
+		projectUser, err := p.getProjectUser(userId, obj.Name, token, obj.Spec.DisplayName)
+		if err != nil {
+			return err
+		}
+		if _, err := p.users.Create(projectUser); err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "Error create user for default pipeline registry")
+		}
 	}
-	if _, err := p.users.Create(projectUser); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error create user for default pipeline registry")
-	}
-
 	return nil
 }
 
@@ -157,7 +170,7 @@ func (p *projectLifecycle) getDefaultRegistryCredential(projectID string, token 
 	}, nil
 }
 
-func (p *projectLifecycle) getProjectUser(projectName, token, displayName string) (*v3.User, error) {
+func (p *projectLifecycle) getProjectUser(userId, projectName, token, displayName string) (*v3.User, error) {
 	enabled := true
 	pwd, err := hashPasswordString(token)
 	if err != nil {
@@ -165,7 +178,7 @@ func (p *projectLifecycle) getProjectUser(projectName, token, displayName string
 	}
 	return &v3.User{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      types.GenerateName("user"),
+			Name:      userId,
 			Namespace: projectName,
 		},
 		DisplayName:        displayName,
@@ -178,6 +191,9 @@ func (p *projectLifecycle) getProjectUser(projectName, token, displayName string
 }
 
 func (p *projectLifecycle) checkAndAdjust(syncInterval time.Duration, clusterName string) {
+	if settings.SystemDefaultRegistry.Get() == "" {
+		return
+	}
 	for range ticker.Context(p.ctx, syncInterval) {
 		projects, err := p.projectLister.List(clusterName, labels.NewSelector())
 		if err != nil {

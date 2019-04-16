@@ -147,7 +147,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 	processedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 	secretName := fmt.Sprintf("%s-%s", c.execution.Namespace, processedRegistry)
-	if registry == settings.SystemDefaultRegistry.Get() {
+	if registry == settings.PipelineDefaultRegistry.Get() {
 		secretName = fmt.Sprintf("%s-%s-%s", c.execution.Namespace, processedRegistry, c.execution.Spec.TriggerUserName)
 	}
 	secretUserKey := utils.PublishSecretUserKey
@@ -171,7 +171,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 		"PLUGIN_TAG":                 tag,
 		"PLUGIN_DOCKERFILE":          config.DockerfilePath,
 		"PLUGIN_CONTEXT":             config.BuildContext,
-		"PLUGIN_BUILD_FROM_REGISTRY": settings.SystemDefaultRegistry.Get(),
+		"PLUGIN_BUILD_FROM_REGISTRY": settings.PipelineDefaultRegistry.Get(),
 		"PLUGIN_INSECURE":            settings.PipelineRegistryInsecure.Get(),
 	}
 	for k, v := range publishEnv {
@@ -201,6 +201,13 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 			MountPath: fmt.Sprintf("/etc/docker/certs.d/docker-registry.%s", ns),
 			ReadOnly:  true,
 		},
+	}
+	if registry == settings.PipelineDefaultRegistry.Get() && settings.PipelineRegistryInsecure.Get() == "false" {
+		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
+			Name: fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, processedRegistry),
+			MountPath: fmt.Sprintf("/etc/docker/certs.d/%s", registry),
+			ReadOnly:  true,
+		})
 	}
 }
 

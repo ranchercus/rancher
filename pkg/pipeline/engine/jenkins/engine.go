@@ -175,7 +175,7 @@ func (j *Engine) preparePipeline(execution *v3.PipelineExecution) error {
 					_, projectID := ref.Parse(execution.Spec.ProjectName)
 					registry = fmt.Sprintf("%s.%s-pipeline", utils.LocalRegistry, projectID)
 				}
-				if registry == settings.SystemDefaultRegistry.Get() {
+				if registry == settings.PipelineDefaultRegistry.Get() {
 					if err := j.prepareRegistryCredentialForCurrentUser(execution, registry); err != nil {
 						return err
 					}
@@ -275,7 +275,18 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 
-	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)
+	userkey := user.Username
+	if userkey == "admin" && len(user.PrincipalIDs) > 1 {
+		for _, obj := range objs {
+			storedToken = obj.(*mv3.Token)
+			loginName := storedToken.UserPrincipal.LoginName
+			if loginName != "" {
+				userkey = loginName
+				break
+			}
+		}
+	}
+ 	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)
 	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -283,7 +294,7 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 			Name:      secretName,
 		},
 		Data: map[string][]byte{
-			utils.PublishSecretUserKey: []byte(user.Username),
+			utils.PublishSecretUserKey: []byte(userkey),
 			utils.PublishSecretPwKey:   []byte(fmt.Sprintf("%s:%s", storedToken.Name, storedToken.Token)),
 		},
 	}
