@@ -257,17 +257,23 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 		return fmt.Errorf("failed to retrieve auth token from cache")
 	}
 	var storedToken *mv3.Token
-	isExpired := true
+	expired := true
 	for _, obj := range objs {
 		storedToken = obj.(*mv3.Token)
-		if !storedToken.Expired {
-			isExpired = false
+		t, err := time.ParseInLocation("2006-01-02T15:04:05Z", storedToken.ExpiresAt, time.Local)
+		if err != nil {
+			continue
+		}
+
+		if t.Unix() > time.Now().Unix() {
+			expired = false
 			break
 		}
 	}
-	if isExpired {
+	if expired {
 		return fmt.Errorf("must authenticate")
 	}
+
 	user, err := j.UserLister.Get("", storedToken.UserID)
 	if err != nil {
 		return err
@@ -286,7 +292,7 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 			}
 		}
 	}
- 	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)
+	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)
 	ns := utils.GetPipelineCommonName(execution.Spec.ProjectName)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
