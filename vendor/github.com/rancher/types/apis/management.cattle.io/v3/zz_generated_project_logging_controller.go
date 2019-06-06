@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: ProjectLoggingGroupVersionKind.Kind,
 	}
+
+	ProjectLoggingGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "projectloggings",
+	}
 )
+
+func init() {
+	resource.Put(ProjectLoggingGroupVersionResource)
+}
 
 func NewProjectLogging(namespace, name string, obj ProjectLogging) *ProjectLogging {
 	obj.APIVersion, obj.Kind = ProjectLoggingGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *projectLoggingController) AddHandler(ctx context.Context, name string, 
 }
 
 func (c *projectLoggingController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler ProjectLoggingHandlerFunc) {
+	resource.PutClusterScoped(ProjectLoggingGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

@@ -7,14 +7,17 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types/convert"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/jailer"
+	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -103,11 +106,30 @@ func mapToSlice(m map[string]string) []string {
 	return ret
 }
 
-func buildCommand(nodeDir string, cmdArgs []string) *exec.Cmd {
+func buildCommand(nodeDir string, node *v3.Node, cmdArgs []string) (*exec.Cmd, error) {
+	// In dev_mode, don't need jail or reference to jail in command
+	if os.Getenv("CATTLE_DEV_MODE") != "" {
+		env := initEnviron(nodeDir)
+		command := exec.Command(nodeCmd, cmdArgs...)
+		command.Env = env
+		return command, nil
+	}
+
+	cred, err := jailer.GetUserCred()
+	if err != nil {
+		return nil, errors.WithMessage(err, "get user cred error")
+	}
+
 	command := exec.Command(nodeCmd, cmdArgs...)
-	env := initEnviron(nodeDir)
-	command.Env = env
-	return command
+	command.SysProcAttr = &syscall.SysProcAttr{}
+	command.SysProcAttr.Credential = cred
+	command.SysProcAttr.Chroot = path.Join(jailer.BaseJailPath, node.Namespace)
+	command.Env = []string{
+
+		nodeDirEnvKey + nodeDir,
+		"PATH=/usr/bin:/var/lib/rancher/management-state/bin",
+	}
+	return command, nil
 }
 
 func initEnviron(nodeDir string) []string {
@@ -151,12 +173,16 @@ func startReturnOutput(command *exec.Cmd) (io.ReadCloser, io.ReadCloser, error) 
 	return readerStdout, readerStderr, nil
 }
 
-func getSSHKey(nodeDir string, obj *v3.Node) (string, error) {
-	if err := waitUntilSSHKey(nodeDir, obj); err != nil {
+func getSSHKey(nodeDir, keyPath string, obj *v3.Node) (string, error) {
+	keyName := filepath.Base(keyPath)
+	if keyName == "" || keyName == "." || keyName == string(filepath.Separator) {
+		keyName = "id_rsa"
+	}
+	if err := waitUntilSSHKey(nodeDir, keyName, obj); err != nil {
 		return "", err
 	}
 
-	return getSSHPrivateKey(nodeDir, obj)
+	return getSSHPrivateKey(nodeDir, keyName, obj)
 }
 
 func (m *Lifecycle) reportStatus(stdoutReader io.Reader, stderrReader io.Reader, node *v3.Node) (*v3.Node, error) {
@@ -198,8 +224,12 @@ func filterDockerMessage(msg string, node *v3.Node) (string, error) {
 	return msg, nil
 }
 
-func nodeExists(nodeDir string, name string) (bool, error) {
-	command := buildCommand(nodeDir, []string{"ls", "-q"})
+func nodeExists(nodeDir string, node *v3.Node) (bool, error) {
+	command, err := buildCommand(nodeDir, node, []string{"ls", "-q"})
+	if err != nil {
+		return false, err
+	}
+
 	r, err := command.StdoutPipe()
 	if err != nil {
 		return false, err
@@ -213,7 +243,7 @@ func nodeExists(nodeDir string, name string) (bool, error) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		foundName := scanner.Text()
-		if foundName == name {
+		if foundName == node.Spec.RequestedHostname {
 			return true, nil
 		}
 	}
@@ -229,7 +259,11 @@ func nodeExists(nodeDir string, name string) (bool, error) {
 }
 
 func deleteNode(nodeDir string, node *v3.Node) error {
-	command := buildCommand(nodeDir, []string{"rm", "-f", node.Spec.RequestedHostname})
+	command, err := buildCommand(nodeDir, node, []string{"rm", "-f", node.Spec.RequestedHostname})
+	if err != nil {
+		return err
+	}
+
 	if err := command.Start(); err != nil {
 		return err
 	}
@@ -237,8 +271,8 @@ func deleteNode(nodeDir string, node *v3.Node) error {
 	return command.Wait()
 }
 
-func getSSHPrivateKey(nodeDir string, node *v3.Node) (string, error) {
-	keyPath := filepath.Join(nodeDir, "machines", node.Spec.RequestedHostname, "id_rsa")
+func getSSHPrivateKey(nodeDir, keyName string, node *v3.Node) (string, error) {
+	keyPath := filepath.Join(nodeDir, "machines", node.Spec.RequestedHostname, keyName)
 	data, err := ioutil.ReadFile(keyPath)
 	if err != nil {
 		return "", nil
@@ -246,8 +280,8 @@ func getSSHPrivateKey(nodeDir string, node *v3.Node) (string, error) {
 	return string(data), nil
 }
 
-func waitUntilSSHKey(nodeDir string, node *v3.Node) error {
-	keyPath := filepath.Join(nodeDir, "machines", node.Spec.RequestedHostname, "id_rsa")
+func waitUntilSSHKey(nodeDir, keyName string, node *v3.Node) error {
+	keyPath := filepath.Join(nodeDir, "machines", node.Spec.RequestedHostname, keyName)
 	startTime := time.Now()
 	increments := 1
 	for {

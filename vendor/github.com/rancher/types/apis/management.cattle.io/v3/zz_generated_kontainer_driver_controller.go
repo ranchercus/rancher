@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -27,7 +28,17 @@ var (
 		Namespaced:   false,
 		Kind:         KontainerDriverGroupVersionKind.Kind,
 	}
+
+	KontainerDriverGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "kontainerdrivers",
+	}
 )
+
+func init() {
+	resource.Put(KontainerDriverGroupVersionResource)
+}
 
 func NewKontainerDriver(namespace, name string, obj KontainerDriver) *KontainerDriver {
 	obj.APIVersion, obj.Kind = KontainerDriverGroupVersionKind.ToAPIVersionAndKind()
@@ -138,6 +149,7 @@ func (c *kontainerDriverController) AddHandler(ctx context.Context, name string,
 }
 
 func (c *kontainerDriverController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler KontainerDriverHandlerFunc) {
+	resource.PutClusterScoped(KontainerDriverGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

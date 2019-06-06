@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: SourceCodeRepositoryGroupVersionKind.Kind,
 	}
+
+	SourceCodeRepositoryGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "sourcecoderepositories",
+	}
 )
+
+func init() {
+	resource.Put(SourceCodeRepositoryGroupVersionResource)
+}
 
 func NewSourceCodeRepository(namespace, name string, obj SourceCodeRepository) *SourceCodeRepository {
 	obj.APIVersion, obj.Kind = SourceCodeRepositoryGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *sourceCodeRepositoryController) AddHandler(ctx context.Context, name st
 }
 
 func (c *sourceCodeRepositoryController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler SourceCodeRepositoryHandlerFunc) {
+	resource.PutClusterScoped(SourceCodeRepositoryGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

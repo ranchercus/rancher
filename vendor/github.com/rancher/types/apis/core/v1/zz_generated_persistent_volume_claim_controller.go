@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,17 @@ var (
 
 		Kind: PersistentVolumeClaimGroupVersionKind.Kind,
 	}
+
+	PersistentVolumeClaimGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "persistentvolumeclaims",
+	}
 )
+
+func init() {
+	resource.Put(PersistentVolumeClaimGroupVersionResource)
+}
 
 func NewPersistentVolumeClaim(namespace, name string, obj v1.PersistentVolumeClaim) *v1.PersistentVolumeClaim {
 	obj.APIVersion, obj.Kind = PersistentVolumeClaimGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *persistentVolumeClaimController) AddHandler(ctx context.Context, name s
 }
 
 func (c *persistentVolumeClaimController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler PersistentVolumeClaimHandlerFunc) {
+	resource.PutClusterScoped(PersistentVolumeClaimGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

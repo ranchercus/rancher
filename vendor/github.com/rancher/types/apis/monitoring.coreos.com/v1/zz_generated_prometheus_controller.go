@@ -6,6 +6,7 @@ import (
 	"github.com/coreos/prometheus-operator/pkg/client/monitoring/v1"
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -29,7 +30,17 @@ var (
 
 		Kind: PrometheusGroupVersionKind.Kind,
 	}
+
+	PrometheusGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "prometheuses",
+	}
 )
+
+func init() {
+	resource.Put(PrometheusGroupVersionResource)
+}
 
 func NewPrometheus(namespace, name string, obj v1.Prometheus) *v1.Prometheus {
 	obj.APIVersion, obj.Kind = PrometheusGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *prometheusController) AddHandler(ctx context.Context, name string, hand
 }
 
 func (c *prometheusController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler PrometheusHandlerFunc) {
+	resource.PutClusterScoped(PrometheusGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

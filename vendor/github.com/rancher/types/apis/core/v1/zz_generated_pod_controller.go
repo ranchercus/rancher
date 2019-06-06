@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,17 @@ var (
 
 		Kind: PodGroupVersionKind.Kind,
 	}
+
+	PodGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "pods",
+	}
 )
+
+func init() {
+	resource.Put(PodGroupVersionResource)
+}
 
 func NewPod(namespace, name string, obj v1.Pod) *v1.Pod {
 	obj.APIVersion, obj.Kind = PodGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *podController) AddHandler(ctx context.Context, name string, handler Pod
 }
 
 func (c *podController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler PodHandlerFunc) {
+	resource.PutClusterScoped(PodGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

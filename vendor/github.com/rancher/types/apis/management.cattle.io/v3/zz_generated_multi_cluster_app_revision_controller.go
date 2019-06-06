@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: MultiClusterAppRevisionGroupVersionKind.Kind,
 	}
+
+	MultiClusterAppRevisionGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "multiclusterapprevisions",
+	}
 )
+
+func init() {
+	resource.Put(MultiClusterAppRevisionGroupVersionResource)
+}
 
 func NewMultiClusterAppRevision(namespace, name string, obj MultiClusterAppRevision) *MultiClusterAppRevision {
 	obj.APIVersion, obj.Kind = MultiClusterAppRevisionGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *multiClusterAppRevisionController) AddHandler(ctx context.Context, name
 }
 
 func (c *multiClusterAppRevisionController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler MultiClusterAppRevisionHandlerFunc) {
+	resource.PutClusterScoped(MultiClusterAppRevisionGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

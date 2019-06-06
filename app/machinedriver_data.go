@@ -53,16 +53,16 @@ func addMachineDrivers(management *config.ManagementContext) error {
 	if err := addMachineDriver("exoscale", "local://", "", "", []string{"api.exoscale.ch"}, false, true, management); err != nil {
 		return err
 	}
-	if err := addMachineDriver("linode", "https://github.com/linode/docker-machine-driver-linode/releases/download/v0.1.6/docker-machine-driver-linode_linux-amd64.zip",
-		"https://linode.github.io/rancher-ui-driver-linode/releases/v0.2.0/component.js", "4d53a20a6ee3090a713c48c2d3f5ed45",
+	if err := addMachineDriver("linode", "https://github.com/linode/docker-machine-driver-linode/releases/download/v0.1.7/docker-machine-driver-linode_linux-amd64.zip",
+		"https://linode.github.io/rancher-ui-driver-linode/releases/v0.2.0/component.js", "faaf1d7d53b55a369baeeb0855b069921a36131868fe3641eb595ac1ff4cf16f",
 		[]string{"linode.github.io"}, false, false, management); err != nil {
 		return err
 	}
 	if err := addMachineDriver("openstack", "local://", "", "", nil, false, true, management); err != nil {
 		return err
 	}
-	if err := addMachineDriver("otc", "https://dockermachinedriver.obs.eu-de.otc.t-systems.com/docker-machine-driver-otc",
-		"", "b4c05f6598dcfac7a8f10899aaac3d42", []string{"*.otc.t-systems.com"}, false, false, management); err != nil {
+	if err := addMachineDriver("otc", "https://github.com/rancher-plugins/docker-machine-driver-otc/releases/download/v2019.5.7/docker-machine-driver-otc",
+		"", "3f793ebb0ebd9477b9166ec542f77e25", []string{"*.otc.t-systems.com"}, false, false, management); err != nil {
 		return err
 	}
 	if err := addMachineDriver("packet", "https://github.com/packethost/docker-machine-driver-packet/releases/download/v0.1.4/docker-machine-driver-packet_linux-amd64.zip",

@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,17 @@ var (
 
 		Kind: SecretGroupVersionKind.Kind,
 	}
+
+	SecretGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "secrets",
+	}
 )
+
+func init() {
+	resource.Put(SecretGroupVersionResource)
+}
 
 func NewSecret(namespace, name string, obj v1.Secret) *v1.Secret {
 	obj.APIVersion, obj.Kind = SecretGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *secretController) AddHandler(ctx context.Context, name string, handler 
 }
 
 func (c *secretController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler SecretHandlerFunc) {
+	resource.PutClusterScoped(SecretGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

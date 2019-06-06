@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: ClusterRoleTemplateBindingGroupVersionKind.Kind,
 	}
+
+	ClusterRoleTemplateBindingGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "clusterroletemplatebindings",
+	}
 )
+
+func init() {
+	resource.Put(ClusterRoleTemplateBindingGroupVersionResource)
+}
 
 func NewClusterRoleTemplateBinding(namespace, name string, obj ClusterRoleTemplateBinding) *ClusterRoleTemplateBinding {
 	obj.APIVersion, obj.Kind = ClusterRoleTemplateBindingGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *clusterRoleTemplateBindingController) AddHandler(ctx context.Context, n
 }
 
 func (c *clusterRoleTemplateBindingController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler ClusterRoleTemplateBindingHandlerFunc) {
+	resource.PutClusterScoped(ClusterRoleTemplateBindingGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

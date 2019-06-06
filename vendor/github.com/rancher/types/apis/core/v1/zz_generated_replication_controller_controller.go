@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,17 @@ var (
 
 		Kind: ReplicationControllerGroupVersionKind.Kind,
 	}
+
+	ReplicationControllerGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "replicationcontrollers",
+	}
 )
+
+func init() {
+	resource.Put(ReplicationControllerGroupVersionResource)
+}
 
 func NewReplicationController(namespace, name string, obj v1.ReplicationController) *v1.ReplicationController {
 	obj.APIVersion, obj.Kind = ReplicationControllerGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *replicationControllerController) AddHandler(ctx context.Context, name s
 }
 
 func (c *replicationControllerController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler ReplicationControllerHandlerFunc) {
+	resource.PutClusterScoped(ReplicationControllerGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

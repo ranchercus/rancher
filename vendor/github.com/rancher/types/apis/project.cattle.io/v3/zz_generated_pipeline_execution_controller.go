@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: PipelineExecutionGroupVersionKind.Kind,
 	}
+
+	PipelineExecutionGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "pipelineexecutions",
+	}
 )
+
+func init() {
+	resource.Put(PipelineExecutionGroupVersionResource)
+}
 
 func NewPipelineExecution(namespace, name string, obj PipelineExecution) *PipelineExecution {
 	obj.APIVersion, obj.Kind = PipelineExecutionGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *pipelineExecutionController) AddHandler(ctx context.Context, name strin
 }
 
 func (c *pipelineExecutionController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler PipelineExecutionHandlerFunc) {
+	resource.PutClusterScoped(PipelineExecutionGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

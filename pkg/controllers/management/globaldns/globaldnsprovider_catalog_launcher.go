@@ -3,8 +3,7 @@ package globaldns
 import (
 	"context"
 	"fmt"
-
-	"reflect"
+	"strings"
 
 	"github.com/rancher/rancher/pkg/controllers/management/globalnamespacerbac"
 	"github.com/rancher/rancher/pkg/namespace"
@@ -13,7 +12,10 @@ import (
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	pv3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config"
+	"github.com/rancher/types/user"
 	"github.com/sirupsen/logrus"
+
+	"github.com/rancher/norman/types/convert"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -32,6 +34,7 @@ type ProviderCatalogLauncher struct {
 	Apps              pv3.AppInterface
 	ProjectLister     v3.ProjectLister
 	appLister         pv3.AppLister
+	userManager       user.Manager
 }
 
 func newGlobalDNSProviderCatalogLauncher(ctx context.Context, mgmt *config.ManagementContext) *ProviderCatalogLauncher {
@@ -40,6 +43,7 @@ func newGlobalDNSProviderCatalogLauncher(ctx context.Context, mgmt *config.Manag
 		Apps:              mgmt.Project.Apps(""),
 		ProjectLister:     mgmt.Management.Projects("").Controller().Lister(),
 		appLister:         mgmt.Project.Apps("").Controller().Lister(),
+		userManager:       mgmt.UserManager,
 	}
 	return n
 }
@@ -83,13 +87,16 @@ func (n *ProviderCatalogLauncher) handleRoute53Provider(obj *v3.GlobalDNSProvide
 	rancherInstallUUID := settings.InstallUUID.Get()
 	//create external-dns route53 provider
 	answers := map[string]string{
-		"provider":      "aws",
-		"aws.zoneType":  "public",
-		"aws.accessKey": obj.Spec.Route53ProviderConfig.AccessKey,
-		"aws.secretKey": obj.Spec.Route53ProviderConfig.SecretKey,
-		"txtOwnerId":    rancherInstallUUID + "_" + obj.Name,
-		"rbac.create":   "true",
-		"policy":        "sync",
+		"provider":            "aws",
+		"aws.zoneType":        obj.Spec.Route53ProviderConfig.ZoneType,
+		"aws.accessKey":       obj.Spec.Route53ProviderConfig.AccessKey,
+		"aws.secretKey":       obj.Spec.Route53ProviderConfig.SecretKey,
+		"txtOwnerId":          rancherInstallUUID + "_" + obj.Name,
+		"rbac.create":         "true",
+		"policy":              "sync",
+		"aws.credentialsPath": obj.Spec.Route53ProviderConfig.CredentialsPath,
+		"aws.roleArn":         obj.Spec.Route53ProviderConfig.RoleArn,
+		"aws.region":          obj.Spec.Route53ProviderConfig.Region,
 	}
 
 	if obj.Spec.RootDomain != "" {
@@ -100,14 +107,21 @@ func (n *ProviderCatalogLauncher) handleRoute53Provider(obj *v3.GlobalDNSProvide
 
 func (n *ProviderCatalogLauncher) handleCloudflareProvider(obj *v3.GlobalDNSProvider) (runtime.Object, error) {
 	rancherInstallUUID := settings.InstallUUID.Get()
+
+	isProxy := "true"
+	if obj.Spec.CloudflareProviderConfig.ProxySetting != nil {
+		isProxy = convert.ToString(*obj.Spec.CloudflareProviderConfig.ProxySetting)
+	}
+
 	//create external-dns route53 provider
 	answers := map[string]string{
-		"provider":          "cloudflare",
-		"cloudflare.apiKey": obj.Spec.CloudflareProviderConfig.APIKey,
-		"cloudflare.email":  obj.Spec.CloudflareProviderConfig.APIEmail,
-		"txtOwnerId":        rancherInstallUUID + "_" + obj.Name,
-		"rbac.create":       "true",
-		"policy":            "sync",
+		"provider":           "cloudflare",
+		"cloudflare.apiKey":  obj.Spec.CloudflareProviderConfig.APIKey,
+		"cloudflare.email":   obj.Spec.CloudflareProviderConfig.APIEmail,
+		"txtOwnerId":         rancherInstallUUID + "_" + obj.Name,
+		"rbac.create":        "true",
+		"policy":             "sync",
+		"cloudflare.proxied": isProxy,
 	}
 
 	if obj.Spec.RootDomain != "" {
@@ -146,9 +160,9 @@ func (n *ProviderCatalogLauncher) createUpdateExternalDNSApp(obj *v3.GlobalDNSPr
 
 	if existingApp != nil {
 		//check if answers should be updated
-		if !reflect.DeepEqual(existingApp.Spec.Answers, answers) {
+		if answersDiffer(existingApp.Spec.Answers, answers) {
 			appToupdate := existingApp.DeepCopy()
-			appToupdate.Spec.Answers = answers
+			updateAnswers(appToupdate.Spec.Answers, answers)
 			_, err = n.Apps.Update(appToupdate)
 			if err != nil && !apierrors.IsAlreadyExists(err) {
 				return nil, err
@@ -172,9 +186,13 @@ func (n *ProviderCatalogLauncher) createUpdateExternalDNSApp(obj *v3.GlobalDNSPr
 			Controller: &controller,
 		}}
 
+		creator, err := n.userManager.EnsureUser(fmt.Sprintf("system://%s", localClusterName), "System account for Cluster "+localClusterName)
+		if err != nil {
+			return nil, err
+		}
 		toCreate := pv3.App{
 			ObjectMeta: metav1.ObjectMeta{
-				Annotations:     CopyCreatorID(nil, obj.Annotations),
+				Annotations:     map[string]string{cattleCreatorIDAnnotationKey: creator.Name},
 				Name:            fmt.Sprintf("%s-%s", "systemapp", obj.Name),
 				Namespace:       sysProject,
 				OwnerReferences: ownerRef,
@@ -230,4 +248,19 @@ func CopyCreatorID(toAnnotations, fromAnnotations map[string]string) map[string]
 		toAnnotations[cattleCreatorIDAnnotationKey] = val
 	}
 	return toAnnotations
+}
+
+func answersDiffer(appAnswers map[string]string, newAnswers map[string]string) bool {
+	for key, value := range newAnswers {
+		if !strings.EqualFold(appAnswers[key], value) {
+			return true
+		}
+	}
+	return false
+}
+
+func updateAnswers(appAnswers map[string]string, newAnswers map[string]string) {
+	for key, value := range newAnswers {
+		appAnswers[key] = value
+	}
 }

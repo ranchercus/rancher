@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,17 @@ var (
 
 		Kind: NetworkPolicyGroupVersionKind.Kind,
 	}
+
+	NetworkPolicyGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "networkpolicies",
+	}
 )
+
+func init() {
+	resource.Put(NetworkPolicyGroupVersionResource)
+}
 
 func NewNetworkPolicy(namespace, name string, obj v1.NetworkPolicy) *v1.NetworkPolicy {
 	obj.APIVersion, obj.Kind = NetworkPolicyGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *networkPolicyController) AddHandler(ctx context.Context, name string, h
 }
 
 func (c *networkPolicyController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler NetworkPolicyHandlerFunc) {
+	resource.PutClusterScoped(NetworkPolicyGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

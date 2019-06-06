@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: GlobalDNSGroupVersionKind.Kind,
 	}
+
+	GlobalDNSGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "globaldnses",
+	}
 )
+
+func init() {
+	resource.Put(GlobalDNSGroupVersionResource)
+}
 
 func NewGlobalDNS(namespace, name string, obj GlobalDNS) *GlobalDNS {
 	obj.APIVersion, obj.Kind = GlobalDNSGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *globalDnsController) AddHandler(ctx context.Context, name string, handl
 }
 
 func (c *globalDnsController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler GlobalDNSHandlerFunc) {
+	resource.PutClusterScoped(GlobalDNSGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

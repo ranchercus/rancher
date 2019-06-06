@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -27,7 +28,17 @@ var (
 		Namespaced:   false,
 		Kind:         GroupMemberGroupVersionKind.Kind,
 	}
+
+	GroupMemberGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "groupmembers",
+	}
 )
+
+func init() {
+	resource.Put(GroupMemberGroupVersionResource)
+}
 
 func NewGroupMember(namespace, name string, obj GroupMember) *GroupMember {
 	obj.APIVersion, obj.Kind = GroupMemberGroupVersionKind.ToAPIVersionAndKind()
@@ -138,6 +149,7 @@ func (c *groupMemberController) AddHandler(ctx context.Context, name string, han
 }
 
 func (c *groupMemberController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler GroupMemberHandlerFunc) {
+	resource.PutClusterScoped(GroupMemberGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

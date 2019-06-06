@@ -93,6 +93,7 @@ func RegisterFollower(ctx context.Context, cluster *config.UserContext, kubeConf
 	cluster.Core.Services("").Controller()
 	cluster.RBAC.ClusterRoleBindings("").Controller()
 	cluster.RBAC.RoleBindings("").Controller()
+	cluster.Core.Endpoints("").Controller()
 	return nil
 }
 

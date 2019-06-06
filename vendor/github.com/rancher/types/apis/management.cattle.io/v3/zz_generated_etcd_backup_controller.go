@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: EtcdBackupGroupVersionKind.Kind,
 	}
+
+	EtcdBackupGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "etcdbackups",
+	}
 )
+
+func init() {
+	resource.Put(EtcdBackupGroupVersionResource)
+}
 
 func NewEtcdBackup(namespace, name string, obj EtcdBackup) *EtcdBackup {
 	obj.APIVersion, obj.Kind = EtcdBackupGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *etcdBackupController) AddHandler(ctx context.Context, name string, hand
 }
 
 func (c *etcdBackupController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler EtcdBackupHandlerFunc) {
+	resource.PutClusterScoped(EtcdBackupGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

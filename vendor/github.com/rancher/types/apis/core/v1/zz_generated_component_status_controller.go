@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +29,17 @@ var (
 		Namespaced:   false,
 		Kind:         ComponentStatusGroupVersionKind.Kind,
 	}
+
+	ComponentStatusGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "componentstatuses",
+	}
 )
+
+func init() {
+	resource.Put(ComponentStatusGroupVersionResource)
+}
 
 func NewComponentStatus(namespace, name string, obj v1.ComponentStatus) *v1.ComponentStatus {
 	obj.APIVersion, obj.Kind = ComponentStatusGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *componentStatusController) AddHandler(ctx context.Context, name string,
 }
 
 func (c *componentStatusController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler ComponentStatusHandlerFunc) {
+	resource.PutClusterScoped(ComponentStatusGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

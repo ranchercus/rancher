@@ -66,12 +66,12 @@ func (d *BaseDriver) Remove() error {
 	return nil
 }
 
-func (d *BaseDriver) Stage() error {
+func (d *BaseDriver) Stage(forceUpdate bool) error {
 	if err := d.getError(); err != nil {
 		return err
 	}
 
-	return d.setError(d.stage())
+	return d.setError(d.stage(forceUpdate))
 }
 
 func (d *BaseDriver) setError(err error) error {
@@ -101,7 +101,7 @@ func (d *BaseDriver) ClearError() {
 	os.Remove(errFile)
 }
 
-func (d *BaseDriver) stage() error {
+func (d *BaseDriver) stage(forceUpdate bool) error {
 	if d.Builtin {
 		return nil
 	}
@@ -109,7 +109,7 @@ func (d *BaseDriver) stage() error {
 	cacheFilePrefix := d.cacheFile()
 
 	driverName, err := isInstalled(cacheFilePrefix)
-	if err != nil || driverName != "" {
+	if !forceUpdate && err != nil || driverName != "" {
 		d.DriverName = driverName
 		return err
 	}
@@ -266,11 +266,11 @@ func (d *BaseDriver) srcBinName() string {
 }
 
 func binDir() string {
-	dest := os.Getenv("GMS_BIN_DIR")
-	if dest != "" {
-		return dest
+	if dl := os.Getenv("CATTLE_DEV_MODE"); dl != "" {
+		return "./management-state/bin"
 	}
-	return "./management-state/bin"
+
+	return "/opt/drivers/management-state/bin"
 }
 
 func compare(hash hash.Hash, value string) (string, bool) {

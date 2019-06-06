@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -28,6 +29,7 @@ const (
 	exporterEtcdCertName = "exporter-etcd-cert"
 	etcd                 = "etcd"
 	controlplane         = "controlplane"
+	creatorIDAnno        = "field.cattle.io/creatorId"
 )
 
 type etcdTLSConfig struct {
@@ -102,6 +104,10 @@ func (ch *clusterHandler) doSync(cluster *mgmtv3.Cluster) error {
 			return errors.Wrap(err, "failed to deploy monitoring")
 		}
 
+		if cluster.Status.MonitoringStatus == nil {
+			cluster.Status.MonitoringStatus = &mgmtv3.MonitoringStatus{}
+		}
+
 		isReady, err := ch.isPrometheusReady(cluster)
 		if err != nil {
 			mgmtv3.ClusterConditionMonitoringEnabled.Unknown(cluster)
@@ -114,11 +120,7 @@ func (ch *clusterHandler) doSync(cluster *mgmtv3.Cluster) error {
 			return nil
 		}
 
-		if cluster.Status.MonitoringStatus == nil {
-			cluster.Status.MonitoringStatus = &mgmtv3.MonitoringStatus{
-				GrafanaEndpoint: fmt.Sprintf("/k8s/clusters/%s/api/v1/namespaces/%s/services/http:access-grafana:80/proxy/", cluster.Name, appTargetNamespace),
-			}
-		}
+		cluster.Status.MonitoringStatus.GrafanaEndpoint = fmt.Sprintf("/k8s/clusters/%s/api/v1/namespaces/%s/services/http:access-grafana:80/proxy/", cluster.Name, appTargetNamespace)
 
 		_, err = ConditionMetricExpressionDeployed.DoUntilTrue(cluster.Status.MonitoringStatus, func() (status *mgmtv3.MonitoringStatus, e error) {
 			return status, ch.deployMetrics(cluster)
@@ -131,7 +133,7 @@ func (ch *clusterHandler) doSync(cluster *mgmtv3.Cluster) error {
 
 		mgmtv3.ClusterConditionMonitoringEnabled.True(cluster)
 		mgmtv3.ClusterConditionMonitoringEnabled.Message(cluster, "")
-	} else if cluster.Status.MonitoringStatus != nil {
+	} else if enabledStatus := mgmtv3.ClusterConditionMonitoringEnabled.GetStatus(cluster); enabledStatus != "" && enabledStatus != "False" {
 		if err := ch.app.withdrawApp(cluster.Name, appName, appTargetNamespace); err != nil {
 			mgmtv3.ClusterConditionMonitoringEnabled.Unknown(cluster)
 			mgmtv3.ClusterConditionMonitoringEnabled.Message(cluster, err.Error())
@@ -339,12 +341,16 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 			appAnswers["prometheus.secrets[0]"] = exporterEtcdCertName
 			appAnswers["exporter-kube-etcd.enabled"] = "true"
 			appAnswers["exporter-kube-etcd.ports.metrics.port"] = "2379"
+			sort.Strings(etcdEndpoints)
 			for k, v := range etcdEndpoints {
 				key := fmt.Sprintf("exporter-kube-etcd.endpoints[%d]", k)
 				appAnswers[key] = v
 			}
 
 			if etcdTLSConfig != nil {
+				sort.Slice(etcdTLSConfig, func(i, j int) bool {
+					return etcdTLSConfig[i].internalAddress < etcdTLSConfig[j].internalAddress
+				})
 				appAnswers["exporter-kube-etcd.certFile"] = etcdTLSConfig[0].certPath
 				appAnswers["exporter-kube-etcd.keyFile"] = etcdTLSConfig[0].keyPath
 			}
@@ -353,6 +359,7 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 		if controlplaneEndpoints, ok := systemComponentMap[controlplane]; ok {
 			appAnswers["exporter-kube-scheduler.enabled"] = "true"
 			appAnswers["exporter-kube-controller-manager.enabled"] = "true"
+			sort.Strings(controlplaneEndpoints)
 			for k, v := range controlplaneEndpoints {
 				key1 := fmt.Sprintf("exporter-kube-scheduler.endpoints[%d]", k)
 				key2 := fmt.Sprintf("exporter-kube-controller-manager.endpoints[%d]", k)
@@ -362,10 +369,15 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 		}
 	}
 
+	creator, err := ch.app.systemAccountManager.GetSystemUser(ch.clusterName)
+	if err != nil {
+		return nil, err
+	}
+
 	appCatalogID := settings.SystemMonitoringCatalogID.Get()
 	app := &v3.App{
 		ObjectMeta: metav1.ObjectMeta{
-			Annotations: monitoring.CopyCreatorID(nil, cluster.Annotations),
+			Annotations: map[string]string{creatorIDAnno: creator.Name},
 			Labels:      monitoring.OwnedLabels(appName, appTargetNamespace, appProjectName, monitoring.ClusterLevel),
 			Name:        appName,
 			Namespace:   appDeployProjectID,
@@ -379,7 +391,7 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 		},
 	}
 
-	err := monitoring.DeployApp(ch.app.cattleAppClient, appDeployProjectID, app)
+	_, err = monitoring.DeployApp(ch.app.cattleAppClient, appDeployProjectID, app, false)
 	if err != nil {
 		return nil, err
 	}

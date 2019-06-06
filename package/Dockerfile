@@ -1,7 +1,7 @@
 FROM ubuntu:18.04
 RUN apt-get update && apt-get install -y git curl ca-certificates unzip xz-utils && \
     useradd rancher && \
-    mkdir -p /var/lib/rancher/etcd /var/lib/cattle && \
+    mkdir -p /var/lib/rancher/etcd /var/lib/cattle /opt/jail /opt/drivers/management-state/bin && \
     chown -R rancher /var/lib/rancher /var/lib/cattle /usr/local/bin
 RUN mkdir /root/.kube && \
     ln -s /usr/bin/rancher /usr/bin/kubectl && \
@@ -12,11 +12,14 @@ RUN mkdir /root/.kube && \
 WORKDIR /var/lib/rancher
 
 ARG ARCH=amd64
-ENV CATTLE_HELM_VERSION v2.10.0-rancher10
-ENV CATTLE_MACHINE_VERSION v0.15.0-rancher6-1
+ARG SYSTEM_CHART_DEFAULT_BRANCH=release-v2.2
+
+ENV CATTLE_SYSTEM_CHART_DEFAULT_BRANCH=$SYSTEM_CHART_DEFAULT_BRANCH
+ENV CATTLE_HELM_VERSION v2.10.0-rancher11
+ENV CATTLE_MACHINE_VERSION v0.15.0-rancher8-1
 ENV LOGLEVEL_VERSION v0.1.2
 ENV TINI_VERSION v0.18.0
-ENV TELEMETRY_VERSION v0.5.3
+ENV TELEMETRY_VERSION v0.5.6
 
 
 RUN curl -sLf https://github.com/rancher/machine-package/releases/download/${CATTLE_MACHINE_VERSION}/docker-machine-${ARCH}.tar.gz | tar xvzf - -C /usr/bin && \
@@ -40,7 +43,7 @@ RUN curl -sLf ${!TINI_URL} > /usr/bin/tini && \
     chmod +x /usr/bin/helm /usr/bin/tini /usr/bin/telemetry /usr/bin/tiller
 
 ENV CATTLE_UI_PATH /usr/share/rancher/ui
-ENV CATTLE_UI_VERSION 2.2.41
+ENV CATTLE_UI_VERSION 2.2.70
 ENV CATTLE_CLI_VERSION v2.2.0
 
 # Please update the api-ui-version in pkg/settings/settings.go when updating the version here.
@@ -69,6 +72,7 @@ ENV CATTLE_CLI_URL_WINDOWS https://releases.rancher.com/cli2/${CATTLE_CLI_VERSIO
 ARG VERSION=dev
 ENV CATTLE_SERVER_VERSION ${VERSION}
 COPY entrypoint.sh rancher /usr/bin/
+COPY jailer.sh /usr/bin/
 RUN chmod +x /usr/bin/entrypoint.sh
 
 ENV CATTLE_AGENT_IMAGE rancher/rancher-agent:${VERSION}

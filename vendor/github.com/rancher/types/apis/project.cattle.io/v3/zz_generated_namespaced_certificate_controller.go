@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: NamespacedCertificateGroupVersionKind.Kind,
 	}
+
+	NamespacedCertificateGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "namespacedcertificates",
+	}
 )
+
+func init() {
+	resource.Put(NamespacedCertificateGroupVersionResource)
+}
 
 func NewNamespacedCertificate(namespace, name string, obj NamespacedCertificate) *NamespacedCertificate {
 	obj.APIVersion, obj.Kind = NamespacedCertificateGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *namespacedCertificateController) AddHandler(ctx context.Context, name s
 }
 
 func (c *namespacedCertificateController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler NamespacedCertificateHandlerFunc) {
+	resource.PutClusterScoped(NamespacedCertificateGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: DockerCredentialGroupVersionKind.Kind,
 	}
+
+	DockerCredentialGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "dockercredentials",
+	}
 )
+
+func init() {
+	resource.Put(DockerCredentialGroupVersionResource)
+}
 
 func NewDockerCredential(namespace, name string, obj DockerCredential) *DockerCredential {
 	obj.APIVersion, obj.Kind = DockerCredentialGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *dockerCredentialController) AddHandler(ctx context.Context, name string
 }
 
 func (c *dockerCredentialController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler DockerCredentialHandlerFunc) {
+	resource.PutClusterScoped(DockerCredentialGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

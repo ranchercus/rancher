@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -27,7 +28,17 @@ var (
 		Namespaced:   false,
 		Kind:         GlobalRoleBindingGroupVersionKind.Kind,
 	}
+
+	GlobalRoleBindingGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "globalrolebindings",
+	}
 )
+
+func init() {
+	resource.Put(GlobalRoleBindingGroupVersionResource)
+}
 
 func NewGlobalRoleBinding(namespace, name string, obj GlobalRoleBinding) *GlobalRoleBinding {
 	obj.APIVersion, obj.Kind = GlobalRoleBindingGroupVersionKind.ToAPIVersionAndKind()
@@ -138,6 +149,7 @@ func (c *globalRoleBindingController) AddHandler(ctx context.Context, name strin
 }
 
 func (c *globalRoleBindingController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler GlobalRoleBindingHandlerFunc) {
+	resource.PutClusterScoped(GlobalRoleBindingGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

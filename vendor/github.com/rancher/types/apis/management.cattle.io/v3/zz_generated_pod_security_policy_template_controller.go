@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -27,7 +28,17 @@ var (
 		Namespaced:   false,
 		Kind:         PodSecurityPolicyTemplateGroupVersionKind.Kind,
 	}
+
+	PodSecurityPolicyTemplateGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "podsecuritypolicytemplates",
+	}
 )
+
+func init() {
+	resource.Put(PodSecurityPolicyTemplateGroupVersionResource)
+}
 
 func NewPodSecurityPolicyTemplate(namespace, name string, obj PodSecurityPolicyTemplate) *PodSecurityPolicyTemplate {
 	obj.APIVersion, obj.Kind = PodSecurityPolicyTemplateGroupVersionKind.ToAPIVersionAndKind()
@@ -138,6 +149,7 @@ func (c *podSecurityPolicyTemplateController) AddHandler(ctx context.Context, na
 }
 
 func (c *podSecurityPolicyTemplateController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler PodSecurityPolicyTemplateHandlerFunc) {
+	resource.PutClusterScoped(PodSecurityPolicyTemplateGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

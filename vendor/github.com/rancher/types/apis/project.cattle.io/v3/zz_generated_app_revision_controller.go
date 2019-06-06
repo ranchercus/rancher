@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: AppRevisionGroupVersionKind.Kind,
 	}
+
+	AppRevisionGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "apprevisions",
+	}
 )
+
+func init() {
+	resource.Put(AppRevisionGroupVersionResource)
+}
 
 func NewAppRevision(namespace, name string, obj AppRevision) *AppRevision {
 	obj.APIVersion, obj.Kind = AppRevisionGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *appRevisionController) AddHandler(ctx context.Context, name string, han
 }
 
 func (c *appRevisionController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler AppRevisionHandlerFunc) {
+	resource.PutClusterScoped(AppRevisionGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

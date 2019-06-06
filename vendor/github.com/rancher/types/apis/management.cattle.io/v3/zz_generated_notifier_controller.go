@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: NotifierGroupVersionKind.Kind,
 	}
+
+	NotifierGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "notifiers",
+	}
 )
+
+func init() {
+	resource.Put(NotifierGroupVersionResource)
+}
 
 func NewNotifier(namespace, name string, obj Notifier) *Notifier {
 	obj.APIVersion, obj.Kind = NotifierGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *notifierController) AddHandler(ctx context.Context, name string, handle
 }
 
 func (c *notifierController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler NotifierHandlerFunc) {
+	resource.PutClusterScoped(NotifierGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

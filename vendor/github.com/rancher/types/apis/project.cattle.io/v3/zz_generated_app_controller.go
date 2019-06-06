@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: AppGroupVersionKind.Kind,
 	}
+
+	AppGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "apps",
+	}
 )
+
+func init() {
+	resource.Put(AppGroupVersionResource)
+}
 
 func NewApp(namespace, name string, obj App) *App {
 	obj.APIVersion, obj.Kind = AppGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *appController) AddHandler(ctx context.Context, name string, handler App
 }
 
 func (c *appController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler AppHandlerFunc) {
+	resource.PutClusterScoped(AppGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

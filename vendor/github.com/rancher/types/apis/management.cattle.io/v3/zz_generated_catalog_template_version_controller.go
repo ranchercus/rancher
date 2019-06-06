@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: CatalogTemplateVersionGroupVersionKind.Kind,
 	}
+
+	CatalogTemplateVersionGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "catalogtemplateversions",
+	}
 )
+
+func init() {
+	resource.Put(CatalogTemplateVersionGroupVersionResource)
+}
 
 func NewCatalogTemplateVersion(namespace, name string, obj CatalogTemplateVersion) *CatalogTemplateVersion {
 	obj.APIVersion, obj.Kind = CatalogTemplateVersionGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *catalogTemplateVersionController) AddHandler(ctx context.Context, name 
 }
 
 func (c *catalogTemplateVersionController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler CatalogTemplateVersionHandlerFunc) {
+	resource.PutClusterScoped(CatalogTemplateVersionGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

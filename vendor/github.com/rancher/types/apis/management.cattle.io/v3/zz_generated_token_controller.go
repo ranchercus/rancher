@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -27,7 +28,17 @@ var (
 		Namespaced:   false,
 		Kind:         TokenGroupVersionKind.Kind,
 	}
+
+	TokenGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "tokens",
+	}
 )
+
+func init() {
+	resource.Put(TokenGroupVersionResource)
+}
 
 func NewToken(namespace, name string, obj Token) *Token {
 	obj.APIVersion, obj.Kind = TokenGroupVersionKind.ToAPIVersionAndKind()
@@ -138,6 +149,7 @@ func (c *tokenController) AddHandler(ctx context.Context, name string, handler T
 }
 
 func (c *tokenController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler TokenHandlerFunc) {
+	resource.PutClusterScoped(TokenGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

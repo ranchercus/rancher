@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,17 @@ var (
 
 		Kind: ConfigMapGroupVersionKind.Kind,
 	}
+
+	ConfigMapGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "configmaps",
+	}
 )
+
+func init() {
+	resource.Put(ConfigMapGroupVersionResource)
+}
 
 func NewConfigMap(namespace, name string, obj v1.ConfigMap) *v1.ConfigMap {
 	obj.APIVersion, obj.Kind = ConfigMapGroupVersionKind.ToAPIVersionAndKind()
@@ -140,6 +151,7 @@ func (c *configMapController) AddHandler(ctx context.Context, name string, handl
 }
 
 func (c *configMapController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler ConfigMapHandlerFunc) {
+	resource.PutClusterScoped(ConfigMapGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

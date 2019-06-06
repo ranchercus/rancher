@@ -2,7 +2,6 @@ package managementstored
 
 import (
 	"context"
-	"github.com/rancher/rancher/pkg/namespace"
 	"net/http"
 
 	"github.com/rancher/norman/store/crd"
@@ -48,6 +47,7 @@ import (
 	"github.com/rancher/rancher/pkg/auth/providers"
 	"github.com/rancher/rancher/pkg/clustermanager"
 	"github.com/rancher/rancher/pkg/controllers/management/compose/common"
+	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/nodeconfig"
 	sourcecodeproviders "github.com/rancher/rancher/pkg/pipeline/providers"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
@@ -567,12 +567,6 @@ func Pipeline(schemas *types.Schemas, management *config.ScaledContext, clusterM
 func Project(schemas *types.Schemas, management *config.ScaledContext) {
 	schema := schemas.Schema(&managementschema.Version, client.ProjectType)
 
-	// delete monitoring resource action
-	delete(schema.ResourceActions, "disableMonitoring")
-	delete(schema.ResourceActions, "editMonitoring")
-	delete(schema.ResourceActions, "enableMonitoring")
-	delete(schema.ResourceActions, "viewMonitoring")
-
 	schema.Formatter = projectaction.Formatter
 	handler := &projectaction.Handler{
 		Projects:       management.Management.Projects(""),
@@ -649,6 +643,7 @@ func MultiClusterApps(schemas *types.Schemas, management *config.ScaledContext) 
 		Crtbs:                         management.Management.ClusterRoleTemplateBindings(""),
 		ProjectLister:                 management.Management.Projects("").Controller().Lister(),
 		ClusterLister:                 management.Management.Clusters("").Controller().Lister(),
+		Apps:                          management.Project.Apps(""),
 	}
 	schema.Formatter = wrapper.Formatter
 	schema.ActionHandler = wrapper.ActionHandler

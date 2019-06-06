@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: PreferenceGroupVersionKind.Kind,
 	}
+
+	PreferenceGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "preferences",
+	}
 )
+
+func init() {
+	resource.Put(PreferenceGroupVersionResource)
+}
 
 func NewPreference(namespace, name string, obj Preference) *Preference {
 	obj.APIVersion, obj.Kind = PreferenceGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *preferenceController) AddHandler(ctx context.Context, name string, hand
 }
 
 func (c *preferenceController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler PreferenceHandlerFunc) {
+	resource.PutClusterScoped(PreferenceGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

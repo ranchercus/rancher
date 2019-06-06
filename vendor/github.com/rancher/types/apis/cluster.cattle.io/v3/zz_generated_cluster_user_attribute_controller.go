@@ -5,6 +5,7 @@ import (
 
 	"github.com/rancher/norman/controller"
 	"github.com/rancher/norman/objectclient"
+	"github.com/rancher/norman/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,7 +29,17 @@ var (
 
 		Kind: ClusterUserAttributeGroupVersionKind.Kind,
 	}
+
+	ClusterUserAttributeGroupVersionResource = schema.GroupVersionResource{
+		Group:    GroupName,
+		Version:  Version,
+		Resource: "clusteruserattributes",
+	}
 )
+
+func init() {
+	resource.Put(ClusterUserAttributeGroupVersionResource)
+}
 
 func NewClusterUserAttribute(namespace, name string, obj ClusterUserAttribute) *ClusterUserAttribute {
 	obj.APIVersion, obj.Kind = ClusterUserAttributeGroupVersionKind.ToAPIVersionAndKind()
@@ -139,6 +150,7 @@ func (c *clusterUserAttributeController) AddHandler(ctx context.Context, name st
 }
 
 func (c *clusterUserAttributeController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler ClusterUserAttributeHandlerFunc) {
+	resource.PutClusterScoped(ClusterUserAttributeGroupVersionResource)
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
 			return handler(key, nil)

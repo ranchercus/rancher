@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/rancher/rancher/pkg/monitoring"
+	"github.com/rancher/rancher/pkg/systemaccount"
 	"github.com/rancher/types/config"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +37,7 @@ func Register(ctx context.Context, agentContext *config.UserContext) {
 		agentSecretClient:           agentContext.Core.Secrets(metav1.NamespaceAll),
 		agentNodeClient:             agentContext.Core.Nodes(metav1.NamespaceAll),
 		agentNamespaceClient:        agentContext.Core.Namespaces(metav1.NamespaceAll),
+		systemAccountManager:        systemaccount.NewManager(agentContext.Management),
 	}
 
 	// operator handler
@@ -68,11 +70,18 @@ func Register(ctx context.Context, agentContext *config.UserContext) {
 	}
 	agentClusterMonitoringEndpointClient.AddHandler(ctx, "cluster-monitoring-enabled-handler", cmeh.sync)
 
+	prtbInformer := mgmtContext.ProjectRoleTemplateBindings("").Controller().Informer()
+	prtbInformer.AddIndexers(map[string]cache.IndexFunc{
+		prtbBySA: prtbBySAFunc,
+	})
+
 	// project handler
 	ph := &projectHandler{
 		clusterName:         clusterName,
 		cattleClusterClient: cattleClustersClient,
 		cattleProjectClient: cattleProjectsClient,
+		prtbIndexer:         prtbInformer.GetIndexer(),
+		prtbClient:          mgmtContext.ProjectRoleTemplateBindings(""),
 		app:                 ah,
 	}
 	cattleProjectsClient.Controller().AddClusterScopedHandler(ctx, "project-monitoring-handler", clusterName, ph.sync)
