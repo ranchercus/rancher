@@ -267,6 +267,7 @@ type PublishImageConfig struct {
 	Tag            string `json:"tag,omitempty" yaml:"tag,omitempty" norman:"required,default=${CICD_GIT_REPOSITORY_NAME}:${CICD_GIT_BRANCH}"`
 	PushRemote     bool   `json:"pushRemote,omitempty" yaml:"pushRemote,omitempty"`
 	Registry       string `json:"registry,omitempty" yaml:"registry,omitempty"`
+	PushFilePath   string   `json:"pushFilePath,omitempty" yaml:"pushFilePath,omitempty"`
 }
 
 type ApplyYamlConfig struct {

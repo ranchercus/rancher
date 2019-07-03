@@ -94,6 +94,9 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		command = fmt.Sprintf(`sh ''' %s '''`, step.RunScriptConfig.ShellScript)
 	} else if step.PublishImageConfig != nil {
 		command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker'''`
+		if pushFilePath := strings.TrimSpace(step.PublishImageConfig.PushFilePath); pushFilePath != "" {
+			command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker && pushfile `+ step.PublishImageConfig.PushFilePath +`'''`
+		}
 	} else if step.ApplyYamlConfig != nil {
 		command = `sh ''' kube-apply '''`
 	} else if step.PublishCatalogConfig != nil {
@@ -206,6 +209,14 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
 			Name: fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, processedRegistry),
 			MountPath: fmt.Sprintf("/etc/docker/certs.d/%s", registry),
+			ReadOnly:  true,
+		})
+	}
+	if strings.TrimSpace(config.PushFilePath) != "" {
+		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
+			Name:      "pshell",
+			MountPath: "/usr/local/bin/pushfile",
+			SubPath:   settings.PipelineShellName.Get(),
 			ReadOnly:  true,
 		})
 	}

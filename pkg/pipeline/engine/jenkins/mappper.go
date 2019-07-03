@@ -182,7 +182,6 @@ func (c *jenkinsPipelineConverter) convertPipelineExecutionToPipelineScript() (s
 	if err := e.Encode(pod, b); err != nil {
 		return "", err
 	}
-
 	return fmt.Sprintf(pipelineBlock, b.String(), timeout, pipelinebuffer.String()), nil
 }
 
@@ -249,6 +248,15 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 			},
 		})
 	}
+
+	pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
+		Name: "pshell",
+		VolumeSource: v1.VolumeSource{
+			HostPath: &v1.HostPathVolumeSource{
+				Path: settings.PipelineShellDir.Get(),
+			},
+		},
+	})
 	return pod
 }
 
