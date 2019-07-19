@@ -6,7 +6,6 @@ const (
 	PublishImageConfigFieldDockerfilePath = "dockerfilePath"
 	PublishImageConfigFieldPushRemote     = "pushRemote"
 	PublishImageConfigFieldRegistry       = "registry"
-	PublishImageConfigFieldPushFilePath   = "pushFilePath"
 	PublishImageConfigFieldTag            = "tag"
 )
 
@@ -16,5 +15,4 @@ type PublishImageConfig struct {
 	PushRemote     bool   `json:"pushRemote,omitempty" yaml:"pushRemote,omitempty"`
 	Registry       string `json:"registry,omitempty" yaml:"registry,omitempty"`
 	Tag            string `json:"tag,omitempty" yaml:"tag,omitempty"`
-	PushFilePath   string `json:"pushFilePath,omitempty" yaml:"pushFilePath,omitempty"`
 }
