@@ -935,4 +935,3 @@ func (l *Lifecycle) reconcileRegistryCredential(projectName, token string) error
 	}
 	return nil
 }
-

@@ -265,7 +265,7 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 			continue
 		}
 
-		if t.Unix() > time.Now().Unix() {
+		if t.Unix() - 300 > time.Now().Unix() {
 			expired = false
 			break
 		}

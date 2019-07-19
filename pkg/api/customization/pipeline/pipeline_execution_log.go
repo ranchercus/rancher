@@ -80,7 +80,7 @@ func (h *ExecutionHandler) handleLog(apiContext *types.APIContext) error {
 	for range ticker.Context(cancelCtx, logSyncInterval) {
 		execution, err = h.PipelineExecutionLister.Get(ns, name)
 		if err != nil {
-			logrus.Infof("error in execution get: %v", err)
+			logrus.Debugf("error in execution get: %v", err)
 			if prevLog == "" {
 				writeData(c, []byte("Log is unavailable."))
 			}
@@ -89,7 +89,7 @@ func (h *ExecutionHandler) handleLog(apiContext *types.APIContext) error {
 		}
 		log, err := pipelineEngine.GetStepLog(execution, stage, step)
 		if err != nil {
-			logrus.Info(err)
+			logrus.Debug(err)
 			if prevLog == "" {
 				writeData(c, []byte("Log is unavailable."))
 			}

@@ -182,6 +182,7 @@ func (c *jenkinsPipelineConverter) convertPipelineExecutionToPipelineScript() (s
 	if err := e.Encode(pod, b); err != nil {
 		return "", err
 	}
+
 	return fmt.Sprintf(pipelineBlock, b.String(), timeout, pipelinebuffer.String()), nil
 }
 

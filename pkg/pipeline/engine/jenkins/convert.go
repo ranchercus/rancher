@@ -5,11 +5,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/rancher/rancher/pkg/settings"
-
 	images "github.com/rancher/rancher/pkg/image"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
+	"github.com/rancher/rancher/pkg/settings"
 	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	"gopkg.in/yaml.v2"

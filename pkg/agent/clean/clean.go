@@ -18,7 +18,6 @@ package clean
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"time"
@@ -88,12 +87,6 @@ func Cluster() error {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return err
-	}
-	if config.BearerToken == "" {
-		tokenBytes, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-		if err == nil {
-			config.BearerToken = string(tokenBytes)
-		}
 	}
 
 	client, err := kubernetes.NewForConfig(config)

@@ -2,6 +2,7 @@ package namespace
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/rancher/norman/api/access"
 	"github.com/rancher/norman/httperror"
@@ -48,7 +49,20 @@ func (p *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 		values.PutValue(data, "{\"conditions\": [{\"type\": \"InitialRolesPopulated\", \"status\": \"Unknown\", \"message\": \"Populating initial roles\"}]}",
 			"annotations", "cattle.io/status")
 	}
-
+	projectId := data["projectId"]
+	pname := ""
+	if projectId != nil && projectId != "" {
+		if id, ok := projectId.(string) ; ok {
+			p := strings.SplitN(id, ":", 2)
+			if len(p) == 1 {
+				pname = p[0]
+			} else {
+				pname = p[1]
+			}
+		}
+		pname = fmt.Sprintf("-%s", pname)
+	}
+	data["name"] = fmt.Sprintf("%s%s", data["name"], pname)
 	if err := p.validateResourceQuota(apiContext, schema, data, "", false); err != nil {
 		return nil, err
 	}
