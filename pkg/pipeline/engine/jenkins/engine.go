@@ -21,9 +21,9 @@ import (
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/types/apis/apps/v1beta2"
-	v1 "github.com/rancher/types/apis/core/v1"
+	"github.com/rancher/types/apis/core/v1"
 	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
-	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
+	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config/dialer"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
@@ -265,7 +265,7 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 			continue
 		}
 
-		if t.Unix() - 300 > time.Now().Unix() {
+		if t.Unix()-300 > time.Now().Unix() {
 			expired = false
 			break
 		}
@@ -282,7 +282,7 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 
 	userkey := user.Username
-	if userkey == "admin" && len(user.PrincipalIDs) > 1 {
+	if userkey == "admin" && len(user.PrincipalIDs) > 0 {
 		for _, obj := range objs {
 			storedToken = obj.(*mv3.Token)
 			loginName := storedToken.UserPrincipal.LoginName

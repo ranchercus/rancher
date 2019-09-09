@@ -258,6 +258,28 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 			},
 		},
 	})
+
+	if tostr := settings.PipelineNodeToleration.Get(); tostr != "" {
+		toinfo := strings.Split(tostr, ":")
+		if len(toinfo) != 4 {
+			goto lable
+		}
+		operator := v1.TolerationOperator(toinfo[1])
+		effect := v1.TaintEffect(toinfo[3])
+		if operator != v1.TolerationOpEqual && operator != v1.TolerationOpExists {
+			goto lable
+		}
+		if effect != v1.TaintEffectNoSchedule && effect != v1.TaintEffectNoExecute && effect != v1.TaintEffectPreferNoSchedule {
+			goto lable
+		}
+		pod.Spec.Tolerations = append(pod.Spec.Tolerations, v1.Toleration{
+			Key: toinfo[0],
+			Operator: operator,
+			Value: toinfo[2],
+			Effect: effect,
+		})
+	}
+	lable:
 	return pod
 }
 

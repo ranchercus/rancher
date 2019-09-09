@@ -6,4 +6,5 @@ var (
 	PipelineDefaultRegistry = NewSetting("pipeline-default-registry", "")
 	PipelineShellDir = NewSetting("pipeline-shell-dir", "")
 	PipelineShellName = NewSetting("pipeline-shell-name", "")
+	PipelineNodeToleration = NewSetting("pipeline-node-toleration", "")
 )

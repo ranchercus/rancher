@@ -60,9 +60,9 @@ func (p *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 				pname = p[1]
 			}
 		}
-		pname = fmt.Sprintf("-%s", pname)
+		pname = fmt.Sprintf("%s-", pname)
 	}
-	data["name"] = fmt.Sprintf("%s%s", data["name"], pname)
+	data["name"] = fmt.Sprintf("%s%s", pname, data["name"])
 	if err := p.validateResourceQuota(apiContext, schema, data, "", false); err != nil {
 		return nil, err
 	}
