@@ -32,15 +32,16 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-var httpTimeout = time.Second * 30
-var httpClient = &http.Client{
-	Timeout: httpTimeout,
-}
-var uuid = settings.InstallUUID.Get()
-var Locker = locker.New()
-
-var CatalogCache = filepath.Join("management-state", "catalog-cache")
-var IconCache = filepath.Join(CatalogCache, ".icon-cache")
+var (
+	httpTimeout = time.Second * 30
+	httpClient  = &http.Client{
+		Timeout: httpTimeout,
+	}
+	uuid         = settings.InstallUUID.Get()
+	Locker       = locker.New()
+	CatalogCache = filepath.Join("management-state", "catalog-cache")
+	IconCache    = filepath.Join(CatalogCache, ".icon-cache")
+)
 
 type Helm struct {
 	LocalPath   string
@@ -464,19 +465,12 @@ func (h *Helm) loadCachedIcon(iconURL string) ([]byte, string, string, error) {
 	return iconBytes, cacheFile, iconURL, nil
 }
 
+// cacheIcon create the cache data & filename from the given parameters. If extension is "" then it will craft one
 func (h *Helm) cacheIcon(iconURL, extension string, iconBytes []byte) (string, error) {
-	parsedURL, err := url.Parse(iconURL)
-	var filename string
-	if err == nil {
-		filename = path.Base(parsedURL.Path)
-	} else {
-		logrus.Debugf("url.Parse(%s) error [%s]", iconURL, err)
-		parts := strings.Split(iconURL, "/")
-		filename = parts[len(parts)-1]
-	}
 	if extension == "" {
-		extension = filepath.Ext(filename)
+		extension = craftExtension(iconURL)
 	}
+
 	hashName := md5Hash(iconURL) + extension
 	if filepath.Ext(hashName) == "" {
 		logrus.Debugf("No extension for: %s", hashName)
@@ -486,6 +480,25 @@ func (h *Helm) cacheIcon(iconURL, extension string, iconBytes []byte) (string, e
 		return "", err
 	}
 	return hashName, nil
+}
+
+// craftExtension attempts to parse the given iconURL to create an appropriate extension
+func craftExtension(iconURL string) string {
+	parsedURL, err := url.Parse(iconURL)
+	var filename string
+	if err == nil {
+		if parsedURL.Path != "" {
+			filename = path.Base(parsedURL.Path)
+		} else {
+			filename = parsedURL.Host
+		}
+	} else {
+		logrus.Debugf("url.Parse(%s) error [%s]", iconURL, err)
+		parts := strings.Split(iconURL, "/")
+		filename = parts[len(parts)-1]
+	}
+	return filepath.Ext(filename)
+
 }
 
 func (h *Helm) iconFromFile(iconURL, versionDir string) ([]byte, string, string, error) {
@@ -604,7 +617,7 @@ func (h *Helm) Icon(versions ChartVersions) (string, string, error) {
 
 		_, filename, url, err := h.fetchIcon(version.Icon, version.Dir)
 		if err != nil {
-			logrus.Debugf("Helm icon error: %s", err)
+			logrus.Infof("Helm icon error: %s", err)
 			failed[version.Icon] = true
 			continue
 		}
