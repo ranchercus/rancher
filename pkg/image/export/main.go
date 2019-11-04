@@ -2,19 +2,12 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
-
-	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 
 	metadata "github.com/rancher/kontainer-driver-metadata/rke"
 	kd "github.com/rancher/rancher/pkg/controllers/management/kontainerdrivermetadata"
-	"gopkg.in/yaml.v2"
-
-	libhelm "github.com/rancher/rancher/pkg/catalog/helm"
 	img "github.com/rancher/rancher/pkg/image"
 	"github.com/rancher/types/image"
 )
@@ -49,20 +42,13 @@ func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("system charts path is required, please set it as the first parameter")
 	}
-	images, err := getImagesFromCharts(os.Args[1])
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	images = append(images, os.Args[2:]...)
-	images = append(images, requiredImagesNotInSystemCharts...)
-
-	if err := run(images...); err != nil {
+	if err := run(os.Args[1], os.Args[2:]); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(images ...string) error {
+func run(systemChartPath string, imagesFromArgs []string) error {
 	tag, ok := os.LookupEnv("TAG")
 	if !ok {
 		return fmt.Errorf("no tag %s", tag)
@@ -82,15 +68,12 @@ func run(images ...string) error {
 		metadata.DriverData.K8sVersionInfo,
 	)
 
-	targetImages, err := img.CollectionImages(linuxInfo.RKESystemImages, v3.ToolsSystemImages)
+	targetImages, err := img.GetLinuxImages(systemChartPath, imagesFromArgs, linuxInfo.RKESystemImages)
 	if err != nil {
 		return err
 	}
-	for _, i := range images {
-		targetImages = append(targetImages, image.Mirror(i))
-	}
 
-	targetWindowsImages, err := img.CollectionImages(windowsInfo.RKESystemImages)
+	targetWindowsImages, err := img.GetWindowsImages(windowsInfo.RKESystemImages)
 	if err != nil {
 		return err
 	}
@@ -217,100 +200,6 @@ func mirrorScript(arch string, targetImages []string) error {
 	return nil
 }
 
-func getImagesFromCharts(path string) ([]string, error) {
-	var images []string
-	imageMap := map[string]struct{}{}
-	chartVersion, err := getChartAndVersion(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-		return walkFunc(imageMap, chartVersion, path, p, info, err)
-	}); err != nil {
-		return images, err
-	}
-	for value := range imageMap {
-		images = append(images, value)
-	}
-	return images, nil
-}
-
-func getChartAndVersion(path string) (map[string]string, error) {
-	rtn := map[string]string{}
-	helm := libhelm.Helm{
-		LocalPath: path,
-		IconPath:  path,
-		Hash:      "",
-	}
-	index, err := helm.LoadIndex()
-	if err != nil {
-		return nil, err
-	}
-	for k, versions := range index.IndexFile.Entries {
-		// because versions is sorted in reverse order, the first one will be the latest version
-		if len(versions) > 0 {
-			rtn[k] = versions[0].Dir
-		}
-	}
-
-	return rtn, nil
-}
-
-func walkFunc(images map[string]struct{}, versions map[string]string, basePath, path string, info os.FileInfo, err error) error {
-	relPath, err := filepath.Rel(basePath, path)
-	if err != nil {
-		return err
-	}
-	var found bool
-	for _, v := range versions {
-		if strings.HasPrefix(relPath, v) {
-			found = true
-			break
-		}
-	}
-	if !found || info.Name() != "values.yaml" {
-		return nil
-	}
-	data, err := ioutil.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	dataInterface := map[interface{}]interface{}{}
-	if err := yaml.Unmarshal(data, &dataInterface); err != nil {
-		return err
-	}
-
-	walkthroughMap(dataInterface, func(inputMap map[interface{}]interface{}) {
-		generateImages(inputMap, images)
-	})
-	return nil
-}
-
-func generateImages(inputMap map[interface{}]interface{}, output map[string]struct{}) {
-	r, repoOk := inputMap["repository"]
-	t, tagOk := inputMap["tag"]
-	if !repoOk || !tagOk {
-		return
-	}
-	repo, repoOk := r.(string)
-	if !repoOk {
-		return
-	}
-
-	output[fmt.Sprintf("%s:%v", repo, t)] = struct{}{}
-
-	return
-}
-
-func walkthroughMap(inputMap map[interface{}]interface{}, walkFunc func(map[interface{}]interface{})) {
-	walkFunc(inputMap)
-	for _, value := range inputMap {
-		if v, ok := value.(map[interface{}]interface{}); ok {
-			walkthroughMap(v, walkFunc)
-		}
-	}
-}
-
 func getWindowsAgentImage() string {
 	tag, ok := os.LookupEnv("TAG")
 	if !ok {
@@ -335,7 +224,6 @@ const (
 	linuxLoadScript = `#!/bin/bash
 images="rancher-images.tar.gz"
 list="rancher-images.txt"
-
 usage () {
     echo "USAGE: $0 [--images rancher-images.tar.gz] --registry my.registry.com:5000"
     echo "  [-l|--image-list path] text file with list of images. 1 per line."
@@ -344,7 +232,6 @@ usage () {
     echo "  [-h|--help] Usage message"
 }
 
-POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     key="$1"
     case $key in
@@ -373,7 +260,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     esac
 done
-
 if [[ -z $reg ]]; then
     usage
     exit 1
@@ -383,19 +269,19 @@ if [[ $help ]]; then
     exit 0
 fi
 
-set -e
-
 docker load --input ${images}
 
-while IFS= read -r i; do 
+while IFS= read -r i; do
     [ -z "${i}" ] && continue
     echo "Tagging ${reg}/${i}"
     case $i in
     */*)
-        [ $(docker tag "${i}" "${reg}/${i}") ] && [ $(docker push "${reg}/${i}") ]
+        docker tag "${i}" "${reg}/${i}"
+        docker push "${reg}/${i}"
         ;;
     *)
-        [ $(docker tag "${i}" "${reg}/rancher/${i}") ] && [ $(docker push "${reg}/rancher/${i}") ]
+        docker tag "${i}" "${reg}/rancher/${i}"
+        docker push "${reg}/rancher/${i}"
         ;;
     esac
 done < "${list}"
@@ -444,7 +330,7 @@ fi
 set -e
 
 pulled=""
-while IFS= read -r i; do 
+while IFS= read -r i; do
     [ -z "${i}" ] && continue
     if [ $(docker pull --quiet "${i}") ]; then
         echo "Image pull success: ${i}"

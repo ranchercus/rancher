@@ -76,7 +76,9 @@ func schemaTypes(schemas *types.Schemas) *types.Schemas {
 func credTypes(schemas *types.Schemas) *types.Schemas {
 	return schemas.
 		AddMapperForType(&Version, v3.CloudCredential{},
+			&m.DisplayName{},
 			&mapper.CredentialMapper{},
+			&m.AnnotationField{Field: "name"},
 			&m.Drop{Field: "namespaceId"}).
 		MustImport(&Version, v3.CloudCredential{})
 }
@@ -328,11 +330,8 @@ func nodeTypes(schemas *types.Schemas) *types.Schemas {
 			&m.Move{From: "nodeLabels", To: "labels"},
 			&m.Move{From: "nodeAnnotations", To: "annotations"},
 			&m.Drop{Field: "desiredNodeTaints"},
-			&m.Drop{Field: "desiredNodeLabels"},
-			&m.Drop{Field: "desiredNodeAnnotations"},
+			&m.Drop{Field: "metadataUpdate"},
 			&m.Drop{Field: "updateTaintsFromAPI"},
-			&m.Drop{Field: "currentNodeLabels"},
-			&m.Drop{Field: "currentNodeAnnotations"},
 			&m.Drop{Field: "desiredNodeUnschedulable"},
 			&m.Drop{Field: "nodeDrainInput"},
 			&m.AnnotationField{Field: "publicEndpoints", List: true},
