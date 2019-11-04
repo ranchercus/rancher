@@ -23,7 +23,7 @@ ENV CATTLE_ETCD_VERSION v3.3.14
 ENV LOGLEVEL_VERSION v0.1.2
 ENV TINI_VERSION v0.18.0
 ENV TELEMETRY_VERSION v0.5.10
-ENV KUBECTL_VERSION v1.14.5
+ENV KUBECTL_VERSION v1.14.7
 ENV DOCKER_MACHINE_LINODE_VERSION v0.1.8
 ENV LINODE_UI_DRIVER_VERSION v0.3.0
 
@@ -66,7 +66,7 @@ RUN curl -sLf ${!TINI_URL} > /usr/bin/tini && \
     chmod +x /usr/bin/helm /usr/bin/tini /usr/bin/telemetry /usr/bin/tiller /usr/bin/k3s /usr/bin/kubectl
 
 ENV CATTLE_UI_PATH /usr/share/rancher/ui
-ENV CATTLE_UI_VERSION 2.3.7
+ENV CATTLE_UI_VERSION 2.3.8
 ENV CATTLE_CLI_VERSION v2.3.0-rc7
 
 # Please update the api-ui-version in pkg/settings/settings.go when updating the version here.
