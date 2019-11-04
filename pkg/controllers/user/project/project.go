@@ -91,7 +91,7 @@ func (p *projectLifecycle) Remove(obj *v3.Project) (runtime.Object, error) {
 	}
 	for _, obj := range users {
 		user := obj.(*v3.User)
-		err := p.users.DeleteNamespaced(user.Namespace, user.Name, &metav1.DeleteOptions{})
+		err := p.users.Delete(user.Name, &metav1.DeleteOptions{})
 		logrus.Warningf("warning delete system default user got - %v", err)
 	}
 	return nil, nil
@@ -178,8 +178,12 @@ func (p *projectLifecycle) getProjectUser(userId, projectName, token, displayNam
 	}
 	return &v3.User{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      userId,
-			Namespace: projectName,
+			Name:   userId,
+			Labels: map[string]string{"cattle.io/creator": "norman"},
+		},
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "management.cattle.io/v3",
+			Kind:       "User",
 		},
 		DisplayName:        displayName,
 		Description:        "user for system default docker registry",
@@ -187,6 +191,7 @@ func (p *projectLifecycle) getProjectUser(userId, projectName, token, displayNam
 		Password:           pwd,
 		MustChangePassword: false,
 		Enabled:            &enabled,
+		Me:                 false,
 	}, nil
 }
 
@@ -228,7 +233,7 @@ type systemDefaultRegistryHandler struct {
 }
 
 func (h *systemDefaultRegistryHandler) sync(key string, obj *corev1.Secret) (runtime.Object, error) {
-	if obj == nil || obj.DeletionTimestamp != nil {
+	if obj != nil && obj.DeletionTimestamp != nil {
 		secretName := ""
 		splits := strings.Split(key, "/")
 		if len(splits) == 2 {
@@ -242,10 +247,10 @@ func (h *systemDefaultRegistryHandler) sync(key string, obj *corev1.Secret) (run
 			}
 			for _, obj := range users {
 				user := obj.(*v3.User)
-				err := h.users.DeleteNamespaced(user.Namespace, user.Name, &metav1.DeleteOptions{})
+				err := h.users.Delete(user.Name, &metav1.DeleteOptions{})
 				logrus.Warningf("warning delete system default user got - %v", err)
 			}
 		}
 	}
-	return nil, nil
+	return obj, nil
 }

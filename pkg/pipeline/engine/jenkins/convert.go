@@ -129,6 +129,18 @@ func (c *jenkinsPipelineConverter) configCloneStepContainer(container *v1.Contai
 
 func (c *jenkinsPipelineConverter) configRunScriptStepContainer(container *v1.Container, step *v3.Step) {
 	container.Image = step.RunScriptConfig.Image
+	if locstr := settings.PipelineLocalShare.Get(); locstr != "" {
+		shares := strings.Split(locstr, ",")
+		for idx, share := range shares {
+			kv := strings.Split(share, ":")
+			if len(kv) == 2 {
+				container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
+					Name: fmt.Sprintf("pipeline-local-share-%d", idx),
+					MountPath: kv[1],
+				})
+			}
+		}
+	}
 }
 
 func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Container, step *v3.Step) {

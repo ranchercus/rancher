@@ -7,4 +7,6 @@ var (
 	PipelineShellDir = NewSetting("pipeline-shell-dir", "")
 	PipelineShellName = NewSetting("pipeline-shell-name", "")
 	PipelineNodeToleration = NewSetting("pipeline-node-toleration", "")
+	PipelineNodeSelector = NewSetting("pipeline-node-selector", "")
+	PipelineLocalShare = NewSetting("pipeline-local-share", "")
 )

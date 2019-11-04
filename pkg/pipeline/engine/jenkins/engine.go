@@ -256,22 +256,32 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 	if len(objs) == 0 {
 		return fmt.Errorf("failed to retrieve auth token from cache")
 	}
-	var storedToken *mv3.Token
-	expired := true
+
+	available := make([]*mv3.Token, 0)
 	for _, obj := range objs {
-		storedToken = obj.(*mv3.Token)
-		t, err := time.ParseInLocation("2006-01-02T15:04:05Z", storedToken.ExpiresAt, time.Local)
+		st := obj.(*mv3.Token)
+		t, err := time.ParseInLocation("2006-01-02T15:04:05Z", st.ExpiresAt, time.Local)
 		if err != nil {
 			continue
 		}
-
 		if t.Unix()-300 > time.Now().Unix() {
-			expired = false
+			available = append(available, st)
+		}
+	}
+
+	if len(available) == 0 {
+		return fmt.Errorf("must authenticate")
+	}
+
+	var storedToken *mv3.Token
+	for _, st := range available {
+		if st.UserPrincipal.LoginName != "admin" {
+			storedToken = st
 			break
 		}
 	}
-	if expired {
-		return fmt.Errorf("must authenticate")
+	if storedToken == nil {
+		storedToken = available[0]
 	}
 
 	user, err := j.UserLister.Get("", storedToken.UserID)
@@ -282,14 +292,10 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 
 	userkey := user.Username
-	if userkey == "admin" && len(user.PrincipalIDs) > 0 {
-		for _, obj := range objs {
-			storedToken = obj.(*mv3.Token)
-			loginName := storedToken.UserPrincipal.LoginName
-			if loginName != "" {
-				userkey = loginName
-				break
-			}
+	if len(user.PrincipalIDs) > 1 {
+		loginName := storedToken.UserPrincipal.LoginName
+		if loginName != "" {
+			userkey = loginName
 		}
 	}
 	secretName := fmt.Sprintf("%s-%s-%s", execution.Namespace, proceccedRegistry, username)

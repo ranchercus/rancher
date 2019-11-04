@@ -250,14 +250,16 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 		})
 	}
 
-	pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
-		Name: "pshell",
-		VolumeSource: v1.VolumeSource{
-			HostPath: &v1.HostPathVolumeSource{
-				Path: settings.PipelineShellDir.Get(),
+	if settings.PipelineShellDir.Get() != "" && settings.PipelineShellName.Get() != ""{
+		pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
+			Name: "pshell",
+			VolumeSource: v1.VolumeSource{
+				HostPath: &v1.HostPathVolumeSource{
+					Path: settings.PipelineShellDir.Get(),
+				},
 			},
-		},
-	})
+		})
+	}
 
 	if tostr := settings.PipelineNodeToleration.Get(); tostr != "" {
 		toinfo := strings.Split(tostr, ":")
@@ -278,6 +280,36 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 			Value: toinfo[2],
 			Effect: effect,
 		})
+	}
+
+	if selstr := settings.PipelineNodeSelector.Get(); selstr != "" {
+		selectors := strings.Split(selstr, ",")
+		for _, selector := range selectors {
+			kv := strings.Split(selector, ":")
+			if len(kv) == 2 {
+				if pod.Spec.NodeSelector == nil {
+					pod.Spec.NodeSelector = make(map[string]string, 0)
+				}
+				pod.Spec.NodeSelector[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	if locstr := settings.PipelineLocalShare.Get(); locstr != "" {
+		shares := strings.Split(locstr, ",")
+		for idx, share := range shares {
+			kv := strings.Split(share, ":")
+			if len(kv) == 2 {
+				pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
+					Name: fmt.Sprintf("pipeline-local-share-%d", idx),
+					VolumeSource: v1.VolumeSource{
+						HostPath: &v1.HostPathVolumeSource{
+							Path: kv[0],
+						},
+					},
+				})
+			}
+		}
 	}
 	lable:
 	return pod
