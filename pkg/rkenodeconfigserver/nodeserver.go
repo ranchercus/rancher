@@ -2,15 +2,11 @@ package rkenodeconfigserver
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
-	"reflect"
-
-	docketypes "github.com/docker/docker/api/types"
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types/slice"
 	"github.com/rancher/rancher/pkg/api/customization/clusterregistrationtokens"
@@ -19,16 +15,14 @@ import (
 	"github.com/rancher/rancher/pkg/rkeworker"
 	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rancher/pkg/systemaccount"
+	"github.com/rancher/rancher/pkg/taints"
 	"github.com/rancher/rancher/pkg/tunnelserver"
-	rkecloudprovider "github.com/rancher/rke/cloudprovider"
-	rkecluster "github.com/rancher/rke/cluster"
-	rkedocker "github.com/rancher/rke/docker"
 	rkehosts "github.com/rancher/rke/hosts"
-	rkepki "github.com/rancher/rke/pki"
 	rkeservices "github.com/rancher/rke/services"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/config"
 	"github.com/sirupsen/logrus"
+	v1 "k8s.io/api/core/v1"
 )
 
 var (
@@ -39,6 +33,8 @@ type RKENodeConfigServer struct {
 	auth                 *tunnelserver.Authorizer
 	lookup               *BundleLookup
 	systemAccountManager *systemaccount.Manager
+	serviceOptionsLister v3.RKEK8sServiceOptionLister
+	serviceOptions       v3.RKEK8sServiceOptionInterface
 }
 
 func Handler(auth *tunnelserver.Authorizer, scaledContext *config.ScaledContext) http.Handler {
@@ -46,6 +42,8 @@ func Handler(auth *tunnelserver.Authorizer, scaledContext *config.ScaledContext)
 		auth:                 auth,
 		lookup:               NewLookup(scaledContext.Core.Namespaces(""), scaledContext.Core),
 		systemAccountManager: systemaccount.NewManagerFromScale(scaledContext),
+		serviceOptionsLister: scaledContext.Management.RKEK8sServiceOptions("").Controller().Lister(),
+		serviceOptions:       scaledContext.Management.RKEK8sServiceOptions(""),
 	}
 }
 
@@ -150,6 +148,7 @@ func (n *RKENodeConfigServer) nonWorkerConfig(ctx context.Context, cluster *v3.C
 		if tempNode.Address == node.Status.NodeConfig.Address {
 			b2d := strings.Contains(infos[tempNode.Address].OperatingSystem, rkehosts.B2DOS)
 			nc.Processes = augmentProcesses(token, tempNode.Processes, false, b2d)
+			nc.Processes = appendTaintsToKubeletArgs(nc.Processes, node.Status.NodeConfig.Taints)
 			return nc, nil
 		}
 	}
@@ -165,17 +164,18 @@ func (n *RKENodeConfigServer) nodeConfig(ctx context.Context, cluster *v3.Cluste
 		return nil, err
 	}
 
-	nodeDockerInfo := infos[node.Status.NodeConfig.Address]
-	if nodeDockerInfo.OSType == "windows" {
-		return n.windowsNodeConfig(ctx, cluster, node, getWindowsReleaseID(&nodeDockerInfo))
-	}
-
 	bundle, err := n.lookup.Lookup(cluster)
 	if err != nil {
 		return nil, err
 	}
 
-	bundle = bundle.ForNode(spec.RancherKubernetesEngineConfig, node.Status.NodeConfig.Address)
+	hostAddress := node.Status.NodeConfig.Address
+	hostDockerInfo := infos[hostAddress]
+	if hostDockerInfo.OSType == "windows" { // compatible with Windows
+		bundle = bundle.ForWindowsNode(spec.RancherKubernetesEngineConfig, hostAddress)
+	} else {
+		bundle = bundle.ForNode(spec.RancherKubernetesEngineConfig, hostAddress)
+	}
 
 	certString, err := bundle.Marshal()
 	if err != nil {
@@ -199,15 +199,20 @@ func (n *RKENodeConfigServer) nodeConfig(ctx context.Context, cluster *v3.Cluste
 		return nil, errors.Wrapf(err, "failed to create or get cluster token for share-mnt")
 	}
 	for _, tempNode := range plan.Nodes {
-		if tempNode.Address == node.Status.NodeConfig.Address {
-			b2d := strings.Contains(infos[tempNode.Address].OperatingSystem, rkehosts.B2DOS)
-			nc.Processes = augmentProcesses(token, tempNode.Processes, true, b2d)
+		if tempNode.Address == hostAddress {
+			if hostDockerInfo.OSType == "windows" { // compatible with Windows
+				nc.Processes = enhanceWindowsProcesses(tempNode.Processes)
+			} else {
+				b2d := strings.Contains(infos[tempNode.Address].OperatingSystem, rkehosts.B2DOS)
+				nc.Processes = augmentProcesses(token, tempNode.Processes, true, b2d)
+			}
+			nc.Processes = appendTaintsToKubeletArgs(nc.Processes, node.Status.NodeConfig.Taints)
 			nc.Files = tempNode.Files
 			return nc, nil
 		}
 	}
 
-	return nil, fmt.Errorf("failed to find plan for %s", node.Status.NodeConfig.Address)
+	return nil, fmt.Errorf("failed to find plan for %s", hostAddress)
 }
 
 func filterHostForSpec(spec *v3.RancherKubernetesEngineConfig, n *v3.Node) {
@@ -279,318 +284,40 @@ func augmentProcesses(token string, processes map[string]v3.Process, worker, b2d
 	return processes
 }
 
-func (n *RKENodeConfigServer) windowsNodeConfig(ctx context.Context, cluster *v3.Cluster, node *v3.Node, windowsReleaseID string) (*rkeworker.NodeConfig, error) {
-	rkeConfig := cluster.Status.AppliedSpec.RancherKubernetesEngineConfig
-	if rkeConfig == nil {
-		return nil, errors.New("only work on the clusters built with 'custom node'")
+func enhanceWindowsProcesses(processes map[string]v3.Process) map[string]v3.Process {
+	newProcesses := make(map[string]v3.Process, len(processes))
+	for k, p := range processes {
+		p.Binds = append(p.Binds,
+			"//./pipe/rancher_wins://./pipe/rancher_wins",
+		)
+		newProcesses[k] = p
 	}
 
-	for _, tempNode := range rkeConfig.Nodes {
-		if tempNode.Address == node.Status.NodeConfig.Address {
-			bundle, err := n.lookup.Lookup(cluster)
-			if err != nil {
-				return nil, err
-			}
-
-			bundle = bundle.ForWindowsNode(rkeConfig, node.Status.NodeConfig.Address, windowsReleaseID)
-			certString, err := bundle.Marshal()
-			if err != nil {
-				return nil, errors.Wrapf(err, "failed to marshall cert bundle for %s", node.Status.NodeConfig.Address)
-			}
-
-			systemImages := formatSystemImages(v3.K8sVersionWindowsSystemImages[rkeConfig.Version], windowsReleaseID)
-			process, err := createWindowsProcesses(rkeConfig, node.Status.NodeConfig, systemImages)
-			if err != nil {
-				return nil, errors.Wrapf(err, "failed to create windows node plan for %s", node.Status.NodeConfig.Address)
-			}
-
-			nc := &rkeworker.NodeConfig{
-				Certs:       certString,
-				ClusterName: cluster.Name,
-				Processes:   process,
-			}
-
-			return nc, nil
-		}
-	}
-
-	return nil, fmt.Errorf("failed to find plan for %s", node.Status.NodeConfig.Address)
+	return newProcesses
 }
 
-func createWindowsProcesses(rkeConfig *v3.RancherKubernetesEngineConfig, configNode *v3.RKEConfigNode, systemImages v3.WindowsSystemImages) (map[string]v3.Process, error) {
-	cniBinariesImage := ""
-	kubernetesBinariesImage := systemImages.KubernetesBinaries
-	nginxProxyImage := systemImages.NginxProxy
-	kubeletPauseImage := systemImages.KubeletPause
-
-	// network
-	cniComponent := strings.ToLower(rkeConfig.Network.Plugin)
-	switch cniComponent {
-	case "flannel", "canal":
-		cniBinariesImage = systemImages.FlannelCNIBinaries
-	default:
-		return nil, fmt.Errorf("windows node can't support %s network plugin", rkeConfig.Network.Plugin)
-	}
-	cniMode := "win-overlay"
-	if len(rkeConfig.Network.Options) > 0 {
-		for _, backendTypeName := range []string{rkecluster.FlannelBackendType, rkecluster.CanalFlannelBackendType} {
-			if flannelBackendType, ok := rkeConfig.Network.Options[backendTypeName]; ok {
-				flannelBackendType = strings.ToLower(flannelBackendType)
-				if flannelBackendType == "host-gw" {
-					cniMode = "win-bridge"
-				}
+func appendTaintsToKubeletArgs(processes map[string]v3.Process, nodeConfigTaints []v3.RKETaint) map[string]v3.Process {
+	if kubelet, ok := processes["kubelet"]; ok && len(nodeConfigTaints) != 0 {
+		initialTaints := taints.GetTaintsFromStrings(taints.GetStringsFromRKETaint(nodeConfigTaints))
+		var currentTaints []v1.Taint
+		foundArgs := ""
+		for i, arg := range kubelet.Command {
+			if strings.HasPrefix(arg, "--register-with-taints=") {
+				foundArgs = strings.TrimPrefix(arg, "--register-with-taints=")
+				kubelet.Command = append(kubelet.Command[:i], kubelet.Command[i+1:]...)
 				break
 			}
 		}
-	}
-
-	// get kubernetes masters
-	controlPlanes := make([]string, 0)
-	for _, host := range rkeConfig.Nodes {
-		for _, role := range host.Role {
-			if role == rkeservices.ControlRole {
-				address := host.InternalAddress
-				if len(address) == 0 {
-					address = host.Address
-				}
-				controlPlanes = append(controlPlanes, address)
-			}
-		}
-	}
-
-	// get private registries
-	privateRegistriesMap := make(map[string]v3.PrivateRegistry)
-	for _, pr := range rkeConfig.PrivateRegistries {
-		if pr.URL == "" {
-			pr.URL = rkedocker.DockerRegistryURL
-		}
-		privateRegistriesMap[pr.URL] = pr
-	}
-	registryAuthConfig := ""
-
-	result := make(map[string]v3.Process)
-
-	registryAuthConfig, _, _ = rkedocker.GetImageRegistryConfig(kubernetesBinariesImage, privateRegistriesMap)
-	result["pre-run-docker-kubernetes-binaries"] = v3.Process{
-		Name:  "kubernetes-binaries",
-		Image: kubernetesBinariesImage,
-		Command: []string{
-			"pwsh.exe",
-		},
-		Args: []string{
-			"-f",
-			"c:\\Program Files\\runtime\\copy.ps1",
-		},
-		Binds: []string{
-			"c:\\etc\\kubernetes:c:\\kubernetes",
-		},
-		ImageRegistryAuthConfig: registryAuthConfig,
-	}
-
-	registryAuthConfig, _, _ = rkedocker.GetImageRegistryConfig(cniBinariesImage, privateRegistriesMap)
-	result["pre-run-docker-cni-binaries"] = v3.Process{
-		Name:  "cni-binaries",
-		Image: cniBinariesImage,
-		Env: []string{
-			fmt.Sprintf("MODE=%s", cniMode),
-		},
-		Command: []string{
-			"pwsh.exe",
-		},
-		Args: []string{
-			"-f",
-			"c:\\Program Files\\runtime\\copy.ps1",
-		},
-		Binds: []string{
-			"c:\\etc\\cni:c:\\cni",
-		},
-		ImageRegistryAuthConfig: registryAuthConfig,
-	}
-
-	registryAuthConfig, _, _ = rkedocker.GetImageRegistryConfig(nginxProxyImage, privateRegistriesMap)
-	result["post-run-docker-nginx-proxy"] = v3.Process{
-		Name:  "nginx-proxy",
-		Image: nginxProxyImage,
-		Env: []string{
-			fmt.Sprintf("%s=%s", rkeservices.NginxProxyEnvName, strings.Join(controlPlanes, ",")),
-		},
-		Command: []string{
-			"pwsh.exe",
-		},
-		RestartPolicy: "always",
-		Args: []string{
-			"-f",
-			"c:\\Program Files\\runtime\\start.ps1",
-		},
-		Publish: []string{
-			"6443:6443",
-		},
-		ImageRegistryAuthConfig: registryAuthConfig,
-	}
-
-	// hyperkube fake process
-	clusterCIDR := rkeConfig.Services.KubeController.ClusterCIDR
-	if len(clusterCIDR) == 0 {
-		clusterCIDR = rkecluster.DefaultClusterCIDR
-	}
-	clusterDomain := rkeConfig.Services.Kubelet.ClusterDomain
-	if len(clusterDomain) == 0 {
-		clusterDomain = rkecluster.DefaultClusterDomain
-	}
-	serviceCIDR := rkeConfig.Services.KubeController.ServiceClusterIPRange
-	if len(serviceCIDR) == 0 {
-		serviceCIDR = rkecluster.DefaultServiceClusterIPRange
-	}
-	dnsServiceIP := rkeConfig.Services.Kubelet.ClusterDNSServer
-	if len(dnsServiceIP) == 0 {
-		dnsServiceIP = rkecluster.DefaultClusterDNSService
-	}
-	clusterMajorVersion := getTagMajorVersion(rkeConfig.Version)
-	serviceOptions := v3.K8sVersionWindowsServiceOptions[clusterMajorVersion]
-	dockerConfig := ""
-	if len(privateRegistriesMap) > 0 {
-		configFile, err := rkedocker.GetKubeletDockerConfig(privateRegistriesMap)
-		if err != nil {
-			return nil, fmt.Errorf("windows node can't parse docker config file: %v", err)
+		if foundArgs != "" {
+			currentTaints = taints.GetTaintsFromStrings(strings.Split(foundArgs, ","))
 		}
 
-		dockerConfig = base64.StdEncoding.EncodeToString([]byte(configFile))
+		// The initial taints are from node pool and node template. They should override the taints from kubelet args.
+		mergedTaints := taints.MergeTaints(currentTaints, initialTaints)
+
+		taintArgs := fmt.Sprintf("--register-with-taints=%s", strings.Join(taints.GetStringsFromTaint(mergedTaints), ","))
+		kubelet.Command = append(kubelet.Command, taintArgs)
+		processes["kubelet"] = kubelet
 	}
-	cloudProviderConfig := ""
-	cloudProviderConfigPath := ""
-	cloudProviderName := ""
-	cloudProvider, err := rkecloudprovider.InitCloudProvider(rkeConfig.CloudProvider)
-	if err != nil {
-		return nil, fmt.Errorf("windows node can't initialize cloud provider: %v", err)
-	}
-	if cloudProvider != nil {
-		configFile, err := cloudProvider.GenerateCloudConfigFile()
-		if err != nil {
-			return nil, fmt.Errorf("windows node can't parse cloud config file: %v", err)
-		}
-
-		cloudProviderName = cloudProvider.GetName()
-		if cloudProviderName == "" {
-			return nil, fmt.Errorf("name of the cloud provider is not defined for custom provider")
-		} else if cloudProviderName != "aws" {
-			cloudProviderConfigPath = "c:/etc/kubernetes/cloud-config"
-		}
-
-		cloudProviderConfig = base64.StdEncoding.EncodeToString([]byte(configFile))
-	}
-
-	extendingKubeletOptions := extendMap(map[string]string{
-		"v":                            "2",
-		"pod-infra-container-image":    kubeletPauseImage,
-		"allow-privileged":             "true",
-		"anonymous-auth":               "false",
-		"image-pull-progress-deadline": "20m",
-		"register-with-taints":         "beta.kubernetes.io/os=windows:PreferNoSchedule",
-		"client-ca-file":               "c:" + rkepki.GetCertPath(rkepki.CACertName),
-		"kubeconfig":                   "c:" + rkepki.GetConfigPath(rkepki.KubeNodeCertName),
-		"hostname-override":            configNode.HostnameOverride,
-		"cluster-domain":               clusterDomain,
-		"cluster-dns":                  dnsServiceIP,
-		"node-ip":                      configNode.InternalAddress,
-		"address":                      "0.0.0.0",
-		"cadvisor-port":                "0",
-		"read-only-port":               "0",
-		"cloud-provider":               cloudProviderName,
-		"cloud-config":                 cloudProviderConfigPath,
-		"volume-plugin-dir":            "c:/var/lib/kubelet/volumeplugins",
-		"root-dir":                     "c:/var/lib/kubelet",
-		"authentication-token-webhook": "true",
-	}, serviceOptions.Kubelet)
-	extendingKubeproxyOptions := extendMap(map[string]string{
-		"v":                 "2",
-		"proxy-mode":        "kernelspace",
-		"kubeconfig":        "c:" + rkepki.GetConfigPath(rkepki.KubeProxyCertName),
-		"hostname-override": configNode.HostnameOverride,
-	}, serviceOptions.Kubeproxy)
-
-	result["hyperkube"] = v3.Process{
-		Name: "hyperkube",
-		Command: []string{
-			"powershell.exe",
-		},
-		Args: []string{
-			"-KubeClusterCIDR", clusterCIDR,
-			"-KubeClusterDomain", clusterDomain,
-			"-KubeServiceCIDR", serviceCIDR,
-			"-KubeDnsServiceIP", dnsServiceIP,
-			"-KubeCNIComponent", cniComponent,
-			"-KubeCNIMode", cniMode,
-			"-KubeletCloudProviderName", cloudProviderName,
-			"-KubeletCloudProviderConfig", cloudProviderConfig,
-			"-KubeletDockerConfig", dockerConfig,
-			"-KubeletOptions", translateMapToTuples(extendingKubeletOptions, `"--%s=%v"`),
-			"-KubeProxyOptions", translateMapToTuples(extendingKubeproxyOptions, `"--%s=%v"`),
-			"-NodeIP", configNode.InternalAddress,
-			"-NodeName", configNode.HostnameOverride,
-		},
-	}
-
-	return result, nil
-}
-
-func getTagMajorVersion(tag string) string {
-	splitTag := strings.Split(tag, ".")
-	if len(splitTag) < 2 {
-		return ""
-	}
-	return strings.Join(splitTag[:2], ".")
-}
-
-func extendMap(sourceMap, targetMap map[string]string) map[string]string {
-	if len(targetMap) != 0 {
-		for key, val := range targetMap {
-			sourceMap[key] = val
-		}
-	}
-	return sourceMap
-}
-
-func translateMapToTuples(options map[string]string, formatter string) string {
-	result := ""
-	if len(options) != 0 {
-		kvPairs := make([]string, 0, len(options))
-		for key, val := range options {
-			kvPairs = append(kvPairs, fmt.Sprintf(formatter, key, val))
-		}
-		result = strings.Join(kvPairs, ";")
-	}
-	return result
-}
-
-func getWindowsReleaseID(nodeDockerInfo *docketypes.Info) string {
-	windowsBuildNumber := "17134"
-	windowsReleaseID := "1803"
-
-	// get build number of windows
-	// e.g.: 10.0 16299 (16299.15.amd64fre.rs3_release.170928-1534)
-	kernelVersionSplits := strings.Split(nodeDockerInfo.KernelVersion, " ")
-	if len(kernelVersionSplits) == 3 {
-		windowsBuildNumber = kernelVersionSplits[1]
-	}
-
-	// translate build number to release id
-	// ref: https://www.microsoft.com/en-us/itpro/windows-10/release-information
-	switch windowsBuildNumber {
-	case "16299":
-		windowsReleaseID = "1709"
-	}
-
-	return windowsReleaseID
-}
-
-func formatSystemImages(originSystemImages v3.WindowsSystemImages, windowsReleaseID string) v3.WindowsSystemImages {
-	origin := reflect.ValueOf(originSystemImages)
-	shadow := reflect.New(origin.Type()).Elem()
-	for i := 0; i < origin.NumField(); i++ {
-		originVal := origin.Field(i).String()
-		dealVal := strings.Replace(originVal, "1803", windowsReleaseID, -1)
-		shadow.Field(i).SetString(dealVal)
-	}
-
-	return shadow.Interface().(v3.WindowsSystemImages)
+	return processes
 }

@@ -31,126 +31,128 @@ node {
         buildContainer()
       }
 
-      stage('Deploy Rancher Server') {
-          deployRancherServer()
-      }
-
-      stage('Provision Cluster(s)') {
-        try {
-          loadClusterConfig()
-
-          clusters.each { type, params ->
-            runProvision(type, params)
-          }
-        } catch(err) {
-          buildFail = true
-          echo "Error: " + err
+      dir ("tests/validation") {
+        stage('Deploy Rancher Server') {
+            deployRancherServer()
         }
-        if (clusters == [:]) {
-          error "All clusters failed to provision. Aborting."
-          currentBuild.result = 'ABORTED'
+
+        stage('Provision Cluster(s)') {
+          try {
+            loadClusterConfig()
+
+            clusters.each { type, params ->
+              runProvision(type, params)
+            }
+          } catch(err) {
+            buildFail = true
+            echo "Error: " + err
+          }
+          if (clusters == [:]) {
+            error "All clusters failed to provision. Aborting."
+            currentBuild.result = 'ABORTED'
+          }
         }
-      }
 
-      stage('Run Preupgrade') {
-        try {
-          clusters.each { cluster, param ->
-            runPreupgradeTests(cluster, "auto-pre", "auto-pre")
+        stage('Run Preupgrade') {
+          try {
+            clusters.each { cluster, param ->
+              runPreupgradeTests(cluster, "auto-pre", "auto-pre")
+            }
+          } catch(err) {
+            buildFail = true
+            echo "Error: " + err
+            echo "Preupgrade tests failed"
+            currentBuild.result = 'UNSTABLE'
           }
-        } catch(err) {
-          buildFail = true
-          echo "Error: " + err
-          echo "Preupgrade tests failed"
-          currentBuild.result = 'UNSTABLE'
         }
-      }
 
-      stage('Checkout Post Branch & Rebuild') {
-        checkoutBranch(POSTUPGRADE_BRANCH)
-        buildContainer()
-      }
-
-      stage('Run Upgrade') {
-        upgradeRancher()
-      }
-
-      stage('Run postupgrade tests') {
-        try {
-          // Sleep for x minutes as a safeguard to ensure
-          // all clusters are available
-          sleep(time: POSTUPGRADE_SLEEP.toInteger(), unit: "MINUTES")
-
-          // Run the postupgrade checks on all provisioned clusters
-          clusters.each { cluster, params ->
-            runPostupgradeTests(cluster, "auto-pre", "auto-post")
-          }
-        } catch(err) {
-          buildFail = true
-          currentBuild.result = 'UNSTABLE'
-          echo "Error: " + err
-          echo "Postupgrade tests failed"
+        stage('Checkout Post Branch & Rebuild') {
+          checkoutBranch(POSTUPGRADE_BRANCH)
+          buildContainer()
         }
-      }  
 
-      // For each cluster type, if it has been selected and has
-      // a k8s postupgrade version specified, upgrade the k8s version
-      stage('Upgrade k8s') {
-        try {
-          if (run_ec2 && k8s_post_ec2 != "") {
-            run_k8s_upgrade("ec2", k8s_post_ec2)
-          }
-          if (run_do && k8s_post_do != "") {
-            run_k8s_upgrade("do", k8s_post_do)
-          }
-          if (run_az && k8s_post_az != "") {
-            run_k8s_upgrade("az", k8s_post_az)
-          }
-          if (run_custom && k8s_post_custom != "") {
-            run_k8s_upgrade("custom", k8s_post_custom)
-          }
-        } catch(err) {
-          buildFail = true
-          echo "Error: " + err
-          echo "Upgrade cluster k8s failed."
-          currentBuild.result = 'FAILURE'
+        stage('Run Upgrade') {
+          upgradeRancher()
         }
-      }
 
-      // For each cluster type, if it has been selected and has
-      // a k8s postupgrade version specified, run the postupgrade
-      // checks after the k8s version has been updated.
-      // This prevents running the postupgrade scripts unnecessarily
-      //
-      // If the final param (xmlPrefix) is supplied, the test report
-      // name will be prepended with this prefix. This allows to use 
-      // the same postupgrade method post k8s without overwriting existing 
-      // test reports
-      stage('Run k8s postupgrade scripts') {
-        try {
-          if (run_ec2 && k8s_post_ec2 != "") {
-            runPostupgradeTests("ec2", "auto-post", "auto-post-k8s", "k8s")        
+        stage('Run postupgrade tests') {
+          try {
+            // Sleep for x minutes as a safeguard to ensure
+            // all clusters are available
+            sleep(time: POSTUPGRADE_SLEEP.toInteger(), unit: "MINUTES")
+
+            // Run the postupgrade checks on all provisioned clusters
+            clusters.each { cluster, params ->
+              runPostupgradeTests(cluster, "auto-pre", "auto-post")
+            }
+          } catch(err) {
+            buildFail = true
+            currentBuild.result = 'UNSTABLE'
+            echo "Error: " + err
+            echo "Postupgrade tests failed"
           }
-          if (run_do && k8s_post_do != "") {
-            runPostupgradeTests("do", "auto-post", "auto-post-k8s", "k8s")        
+        }  
+
+        // For each cluster type, if it has been selected and has
+        // a k8s postupgrade version specified, upgrade the k8s version
+        stage('Upgrade k8s') {
+          try {
+            if (run_ec2 && k8s_post_ec2 != "") {
+              run_k8s_upgrade("ec2", k8s_post_ec2)
+            }
+            if (run_do && k8s_post_do != "") {
+              run_k8s_upgrade("do", k8s_post_do)
+            }
+            if (run_az && k8s_post_az != "") {
+              run_k8s_upgrade("az", k8s_post_az)
+            }
+            if (run_custom && k8s_post_custom != "") {
+              run_k8s_upgrade("custom", k8s_post_custom)
+            }
+          } catch(err) {
+            buildFail = true
+            echo "Error: " + err
+            echo "Upgrade cluster k8s failed."
+            currentBuild.result = 'FAILURE'
           }
-          if (run_az && k8s_post_az != "") {
-            runPostupgradeTests("az", "auto-post", "auto-post-k8s", "k8s")        
-          }
-          if (run_custom && k8s_post_custom != "") {
-            runPostupgradeTests("custom", "auto-post", "auto-post-k8s", "k8s")        
-          }
-        } catch(err) {
-          buildFail = true
-          echo "Error: " + err
-          echo "k8s postupgrade scripts failed"
-          currentBuild.result = 'UNSTABLE'
         }
-      }
 
-      // If RANCHER_DELETE_SERVER is true and no tests have failed (buildFail = true),
-      // delete Rancher server and all clusters
-      stage('Delete Rancher Server') {
-        deleteRancherServer()
+        // For each cluster type, if it has been selected and has
+        // a k8s postupgrade version specified, run the postupgrade
+        // checks after the k8s version has been updated.
+        // This prevents running the postupgrade scripts unnecessarily
+        //
+        // If the final param (xmlPrefix) is supplied, the test report
+        // name will be prepended with this prefix. This allows to use 
+        // the same postupgrade method post k8s without overwriting existing 
+        // test reports
+        stage('Run k8s postupgrade scripts') {
+          try {
+            if (run_ec2 && k8s_post_ec2 != "") {
+              runPostupgradeTests("ec2", "auto-post", "auto-post-k8s", "k8s")        
+            }
+            if (run_do && k8s_post_do != "") {
+              runPostupgradeTests("do", "auto-post", "auto-post-k8s", "k8s")        
+            }
+            if (run_az && k8s_post_az != "") {
+              runPostupgradeTests("az", "auto-post", "auto-post-k8s", "k8s")        
+            }
+            if (run_custom && k8s_post_custom != "") {
+              runPostupgradeTests("custom", "auto-post", "auto-post-k8s", "k8s")        
+            }
+          } catch(err) {
+            buildFail = true
+            echo "Error: " + err
+            echo "k8s postupgrade scripts failed"
+            currentBuild.result = 'UNSTABLE'
+          }
+        }
+
+        // If RANCHER_DELETE_SERVER is true and no tests have failed (buildFail = true),
+        // delete Rancher server and all clusters
+        stage('Delete Rancher Server') {
+          deleteRancherServer()
+        }
       }
     }
   } catch (e) {

@@ -1,12 +1,8 @@
 package authn
 
 import (
-	"strings"
-
-	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/api/errors"
-
 	"context"
+	"strings"
 
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/store/transform"
@@ -16,6 +12,8 @@ import (
 	"github.com/rancher/rancher/pkg/auth/requests"
 	client "github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/config"
+	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/api/errors"
 )
 
 func SetRTBStore(ctx context.Context, schema *types.Schema, mgmt *config.ScaledContext) {

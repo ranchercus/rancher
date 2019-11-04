@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	rkeData "github.com/rancher/kontainer-driver-metadata/rke/templates"
+	"github.com/rancher/rke/templates"
 	"os"
 	"os/exec"
 	"time"
@@ -13,8 +15,10 @@ import (
 	"strings"
 
 	"github.com/rancher/rke/addons"
+	"github.com/rancher/rke/authz"
 	"github.com/rancher/rke/k8s"
 	"github.com/rancher/rke/log"
+	"github.com/rancher/rke/services"
 	"github.com/rancher/rke/util"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
@@ -46,6 +50,7 @@ type ingressOptions struct {
 	Options        map[string]string
 	NodeSelector   map[string]string
 	ExtraArgs      map[string]string
+	DNSPolicy      string
 	AlpineImage    string
 	IngressImage   string
 	IngressBackend string
@@ -54,6 +59,7 @@ type ingressOptions struct {
 type MetricsServerOptions struct {
 	RBACConfig         string
 	Options            map[string]string
+	NodeSelector       map[string]string
 	MetricsServerImage string
 	Version            string
 }
@@ -79,6 +85,7 @@ type KubeDNSOptions struct {
 	ClusterDNSServer       string
 	ReverseCIDRs           []string
 	UpstreamNameservers    []string
+	StubDomains            map[string][]string
 	NodeSelector           map[string]string
 }
 
@@ -96,21 +103,21 @@ func getAddonResourceName(addon string) string {
 	return AddonResourceName
 }
 
-func (c *Cluster) deployK8sAddOns(ctx context.Context) error {
-	if err := c.deployDNS(ctx); err != nil {
+func (c *Cluster) deployK8sAddOns(ctx context.Context, data map[string]interface{}) error {
+	if err := c.deployDNS(ctx, data); err != nil {
 		if err, ok := err.(*addonError); ok && err.isCritical {
 			return err
 		}
 		log.Warnf(ctx, "Failed to deploy DNS addon execute job for provider %s: %v", c.DNS.Provider, err)
 
 	}
-	if err := c.deployMetricServer(ctx); err != nil {
+	if err := c.deployMetricServer(ctx, data); err != nil {
 		if err, ok := err.(*addonError); ok && err.isCritical {
 			return err
 		}
 		log.Warnf(ctx, "Failed to deploy addon execute job [%s]: %v", MetricsServerAddonResourceName, err)
 	}
-	if err := c.deployIngress(ctx); err != nil {
+	if err := c.deployIngress(ctx, data); err != nil {
 		if err, ok := err.(*addonError); ok && err.isCritical {
 			return err
 		}
@@ -157,9 +164,18 @@ func (c *Cluster) deployAddonsInclude(ctx context.Context) error {
 			log.Infof(ctx, "[addons] Adding addon from url %s", addon)
 			logrus.Debugf("URL Yaml: %s", addonYAML)
 
+			// make sure we properly separated manifests
+			addonYAMLStr := string(addonYAML)
+
+			formattedAddonYAML := formatAddonYAML(addonYAMLStr)
+
+			addonYAML = []byte(formattedAddonYAML)
+			logrus.Debugf("Formatted Yaml: %s", addonYAML)
+
 			if err := validateUserAddonYAML(addonYAML); err != nil {
 				return err
 			}
+
 			manifests = append(manifests, addonYAML...)
 		} else if isFilePath(addon) {
 			addonYAML, err := ioutil.ReadFile(addon)
@@ -171,9 +187,12 @@ func (c *Cluster) deployAddonsInclude(ctx context.Context) error {
 
 			// make sure we properly separated manifests
 			addonYAMLStr := string(addonYAML)
-			if !strings.HasPrefix(addonYAMLStr, "---") {
-				addonYAML = []byte(fmt.Sprintf("%s\n%s", "---", addonYAMLStr))
-			}
+
+			formattedAddonYAML := formatAddonYAML(addonYAMLStr)
+
+			addonYAML = []byte(formattedAddonYAML)
+			logrus.Debugf("Formatted Yaml: %s", addonYAML)
+
 			if err := validateUserAddonYAML(addonYAML); err != nil {
 				return err
 			}
@@ -186,6 +205,19 @@ func (c *Cluster) deployAddonsInclude(ctx context.Context) error {
 	logrus.Debugf("[addons] Compiled addons yaml: %s", string(manifests))
 
 	return c.doAddonDeploy(ctx, string(manifests), UserAddonsIncludeResourceName, false)
+}
+
+func formatAddonYAML(addonYAMLStr string) string {
+	if !strings.HasPrefix(addonYAMLStr, "---") {
+		logrus.Debug("Yaml does not start with dashes")
+		addonYAMLStr = fmt.Sprintf("%s\n%s", "---", addonYAMLStr)
+	}
+
+	if !strings.HasSuffix(addonYAMLStr, "\n") {
+		logrus.Debug("Yaml does not end with newline")
+		addonYAMLStr = fmt.Sprintf("%s\n", addonYAMLStr)
+	}
+	return addonYAMLStr
 }
 
 func validateUserAddonYAML(addon []byte) error {
@@ -220,7 +252,7 @@ func getAddonFromURL(yamlURL string) ([]byte, error) {
 
 }
 
-func (c *Cluster) deployKubeDNS(ctx context.Context) error {
+func (c *Cluster) deployKubeDNS(ctx context.Context, data map[string]interface{}) error {
 	log.Infof(ctx, "[addons] Setting up %s", c.DNS.Provider)
 	KubeDNSConfig := KubeDNSOptions{
 		KubeDNSImage:           c.SystemImages.KubeDNS,
@@ -232,9 +264,14 @@ func (c *Cluster) deployKubeDNS(ctx context.Context) error {
 		ClusterDNSServer:       c.ClusterDNSServer,
 		UpstreamNameservers:    c.DNS.UpstreamNameservers,
 		ReverseCIDRs:           c.DNS.ReverseCIDRs,
+		StubDomains:            c.DNS.StubDomains,
 		NodeSelector:           c.DNS.NodeSelector,
 	}
-	kubeDNSYaml, err := addons.GetKubeDNSManifest(KubeDNSConfig)
+	tmplt, err := templates.GetVersionedTemplates(rkeData.KubeDNS, data, c.Version)
+	if err != nil {
+		return err
+	}
+	kubeDNSYaml, err := templates.CompileTemplateFromMap(tmplt, KubeDNSConfig)
 	if err != nil {
 		return err
 	}
@@ -245,7 +282,7 @@ func (c *Cluster) deployKubeDNS(ctx context.Context) error {
 	return nil
 }
 
-func (c *Cluster) deployCoreDNS(ctx context.Context) error {
+func (c *Cluster) deployCoreDNS(ctx context.Context, data map[string]interface{}) error {
 	log.Infof(ctx, "[addons] Setting up %s", c.DNS.Provider)
 	CoreDNSConfig := CoreDNSOptions{
 		CoreDNSImage:           c.SystemImages.CoreDNS,
@@ -257,7 +294,11 @@ func (c *Cluster) deployCoreDNS(ctx context.Context) error {
 		ReverseCIDRs:           c.DNS.ReverseCIDRs,
 		NodeSelector:           c.DNS.NodeSelector,
 	}
-	coreDNSYaml, err := addons.GetCoreDNSManifest(CoreDNSConfig)
+	tmplt, err := templates.GetVersionedTemplates(rkeData.CoreDNS, data, c.Version)
+	if err != nil {
+		return err
+	}
+	coreDNSYaml, err := templates.CompileTemplateFromMap(tmplt, CoreDNSConfig)
 	if err != nil {
 		return err
 	}
@@ -268,7 +309,7 @@ func (c *Cluster) deployCoreDNS(ctx context.Context) error {
 	return nil
 }
 
-func (c *Cluster) deployMetricServer(ctx context.Context) error {
+func (c *Cluster) deployMetricServer(ctx context.Context, data map[string]interface{}) error {
 	if c.Monitoring.Provider == "none" {
 		addonJobExists, err := addons.AddonJobExists(MetricsServerAddonJobName, c.LocalKubeConfigPath, c.K8sWrapTransport)
 		if err != nil {
@@ -294,9 +335,14 @@ func (c *Cluster) deployMetricServer(ctx context.Context) error {
 		MetricsServerImage: c.SystemImages.MetricsServer,
 		RBACConfig:         c.Authorization.Mode,
 		Options:            c.Monitoring.Options,
+		NodeSelector:       c.Monitoring.NodeSelector,
 		Version:            util.GetTagMajorVersion(versionTag),
 	}
-	metricsYaml, err := addons.GetMetricsServerManifest(MetricsServerConfig)
+	tmplt, err := templates.GetVersionedTemplates(rkeData.MetricsServer, data, c.Version)
+	if err != nil {
+		return err
+	}
+	metricsYaml, err := templates.CompileTemplateFromMap(tmplt, MetricsServerConfig)
 	if err != nil {
 		return err
 	}
@@ -418,7 +464,7 @@ func (c *Cluster) ApplySystemAddonExecuteJob(addonJob string, addonUpdated bool)
 	return nil
 }
 
-func (c *Cluster) deployIngress(ctx context.Context) error {
+func (c *Cluster) deployIngress(ctx context.Context, data map[string]interface{}) error {
 	if c.Ingress.Provider == "none" {
 		addonJobExists, err := addons.AddonJobExists(IngressAddonJobName, c.LocalKubeConfigPath, c.K8sWrapTransport)
 		if err != nil {
@@ -442,6 +488,7 @@ func (c *Cluster) deployIngress(ctx context.Context) error {
 		Options:        c.Ingress.Options,
 		NodeSelector:   c.Ingress.NodeSelector,
 		ExtraArgs:      c.Ingress.ExtraArgs,
+		DNSPolicy:      c.Ingress.DNSPolicy,
 		IngressImage:   c.SystemImages.Ingress,
 		IngressBackend: c.SystemImages.IngressBackend,
 	}
@@ -454,14 +501,23 @@ func (c *Cluster) deployIngress(ctx context.Context) error {
 			ingressConfig.AlpineImage = c.SystemImages.Alpine
 		}
 	}
-
+	tmplt, err := templates.GetVersionedTemplates(rkeData.NginxIngress, data, c.Version)
+	if err != nil {
+		return err
+	}
 	// Currently only deploying nginx ingress controller
-	ingressYaml, err := addons.GetNginxIngressManifest(ingressConfig)
+	ingressYaml, err := templates.CompileTemplateFromMap(tmplt, ingressConfig)
 	if err != nil {
 		return err
 	}
 	if err := c.doAddonDeploy(ctx, ingressYaml, IngressAddonResourceName, false); err != nil {
 		return err
+	}
+	// ingress runs in it's own namespace, so it needs it's own role/rolebinding for PSP
+	if c.Authorization.Mode == services.RBACAuthorizationMode && c.Services.KubeAPI.PodSecurityPolicy {
+		if err := authz.ApplyDefaultPodSecurityPolicyRole(ctx, c.LocalKubeConfigPath, NginxIngressAddonAppName, c.K8sWrapTransport); err != nil {
+			return fmt.Errorf("Failed to apply default PodSecurityPolicy ClusterRole and ClusterRoleBinding: %v", err)
+		}
 	}
 	log.Infof(ctx, "[ingress] ingress controller %s deployed successfully", c.Ingress.Provider)
 	return nil
@@ -483,7 +539,7 @@ func (c *Cluster) removeDNSProvider(ctx context.Context, dnsprovider string) err
 	return nil
 }
 
-func (c *Cluster) deployDNS(ctx context.Context) error {
+func (c *Cluster) deployDNS(ctx context.Context, data map[string]interface{}) error {
 	for _, dnsprovider := range DNSProviders {
 		if strings.EqualFold(dnsprovider, c.DNS.Provider) {
 			continue
@@ -494,7 +550,7 @@ func (c *Cluster) deployDNS(ctx context.Context) error {
 	}
 	switch DNSProvider := c.DNS.Provider; DNSProvider {
 	case DefaultDNSProvider:
-		if err := c.deployKubeDNS(ctx); err != nil {
+		if err := c.deployKubeDNS(ctx, data); err != nil {
 			if err, ok := err.(*addonError); ok && err.isCritical {
 				return err
 			}
@@ -503,7 +559,7 @@ func (c *Cluster) deployDNS(ctx context.Context) error {
 		log.Infof(ctx, "[dns] DNS provider %s deployed successfully", c.DNS.Provider)
 		return nil
 	case CoreDNSProvider:
-		if err := c.deployCoreDNS(ctx); err != nil {
+		if err := c.deployCoreDNS(ctx, data); err != nil {
 			if err, ok := err.(*addonError); ok && err.isCritical {
 				return err
 			}

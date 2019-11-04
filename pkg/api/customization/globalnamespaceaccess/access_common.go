@@ -5,18 +5,16 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rancher/rancher/pkg/ref"
-
 	"github.com/rancher/norman/api/access"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
 	"github.com/rancher/norman/types/set"
 	"github.com/rancher/norman/types/slice"
+	"github.com/rancher/rancher/pkg/ref"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
 	client "github.com/rancher/types/client/management/v3"
-
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -409,6 +407,9 @@ func (ma *MemberAccess) GetAccessTypeOfCaller(callerID, creatorID, name string, 
 			username = m.UserName
 		}
 		if username != "" { // found the caller
+			return m.AccessType, nil
+		}
+		if m.GroupPrincipalName == "*" {
 			return m.AccessType, nil
 		}
 	}

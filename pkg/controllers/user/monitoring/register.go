@@ -38,6 +38,8 @@ func Register(ctx context.Context, agentContext *config.UserContext) {
 		agentNodeClient:             agentContext.Core.Nodes(metav1.NamespaceAll),
 		agentNamespaceClient:        agentContext.Core.Namespaces(metav1.NamespaceAll),
 		systemAccountManager:        systemaccount.NewManager(agentContext.Management),
+		projectLister:               mgmtContext.Projects(metav1.NamespaceAll).Controller().Lister(),
+		catalogTemplateLister:       mgmtContext.CatalogTemplates(metav1.NamespaceAll).Controller().Lister(),
 	}
 
 	// operator handler
@@ -51,12 +53,14 @@ func Register(ctx context.Context, agentContext *config.UserContext) {
 
 	_, clusterMonitoringNamespace := monitoring.ClusterMonitoringInfo()
 	agentClusterMonitoringEndpointClient := agentContext.Core.Endpoints(clusterMonitoringNamespace)
+	agentClusterMonitoringEndpointLister := agentContext.Core.Endpoints(clusterMonitoringNamespace).Controller().Lister()
+	agentNodeClient := agentContext.Core.Nodes(metav1.NamespaceAll)
 
 	// cluster handler
 	ch := &clusterHandler{
 		clusterName:          clusterName,
 		cattleClustersClient: cattleClustersClient,
-		agentEndpointsLister: agentClusterMonitoringEndpointClient.Controller().Lister(),
+		agentEndpointsLister: agentClusterMonitoringEndpointLister,
 		app:                  ah,
 	}
 	cattleClustersClient.AddHandler(ctx, "cluster-monitoring-handler", ch.sync)
@@ -67,8 +71,10 @@ func Register(ctx context.Context, agentContext *config.UserContext) {
 		clusterName:             clusterName,
 		cattleClusterController: cattleClusterController,
 		cattleClusterLister:     cattleClusterController.Lister(),
+		agentEndpointsLister:    agentClusterMonitoringEndpointLister,
 	}
 	agentClusterMonitoringEndpointClient.AddHandler(ctx, "cluster-monitoring-enabled-handler", cmeh.sync)
+	agentNodeClient.AddHandler(ctx, "cluster-monitoring-sync-windows-node-handler", cmeh.syncWindowsNode)
 
 	prtbInformer := mgmtContext.ProjectRoleTemplateBindings("").Controller().Informer()
 	prtbInformer.AddIndexers(map[string]cache.IndexFunc{
@@ -88,7 +94,7 @@ func Register(ctx context.Context, agentContext *config.UserContext) {
 }
 
 func RegisterAgent(ctx context.Context, agentContext *config.UserOnlyContext) {
-	cp := &ControlPlaneEndpointController{
+	cp := &ExporterEndpointController{
 		Endpoints:           agentContext.Core.Endpoints("cattle-prometheus"),
 		EndpointLister:      agentContext.Core.Endpoints("cattle-prometheus").Controller().Lister(),
 		EndpointsController: agentContext.Core.Endpoints("cattle-prometheus").Controller(),

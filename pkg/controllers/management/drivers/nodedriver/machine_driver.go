@@ -38,6 +38,11 @@ var (
 		"otc":          map[string]string{"privateKeyFile": "privateKeyFile"},
 		"packet":       map[string]string{"userdata": "userdata"},
 	}
+	SSHKeyFields = map[string]bool{
+		"sshKeyContents": true,
+		"sshKey":         true,
+		"privateKeyFile": true,
+	}
 )
 
 const (
@@ -105,6 +110,13 @@ func (m *Lifecycle) download(obj *v3.NodeDriver) (*v3.NodeDriver, error) {
 		}
 		userCredFields, pwdFields, defaults := getCredFields(obj.Annotations)
 		for name, field := range existingSchema.Spec.ResourceFields {
+			if _, ok := SSHKeyFields[name]; ok {
+				if field.Type != "password" {
+					forceUpdate = true
+					break
+				}
+				continue
+			}
 			if pwdFields[name] {
 				field.Type = "password"
 			}
@@ -117,7 +129,9 @@ func (m *Lifecycle) download(obj *v3.NodeDriver) (*v3.NodeDriver, error) {
 				credFields[name] = credField
 			}
 		}
-		return m.createCredSchema(obj, credFields)
+		if !forceUpdate {
+			return m.createCredSchema(obj, credFields)
+		}
 	}
 
 	if !driver.Exists() || forceUpdate {
@@ -146,7 +160,7 @@ func (m *Lifecycle) download(obj *v3.NodeDriver) (*v3.NodeDriver, error) {
 		if err := driver.Install(); err != nil {
 			return nil, err
 		}
-		if err = driver.Excutable(); err != nil {
+		if err = driver.Executable(); err != nil {
 			return nil, err
 		}
 		obj.Spec.DisplayName = strings.TrimPrefix(driver.Name(), drivers.DockerMachineDriverPrefix)
@@ -189,7 +203,7 @@ func (m *Lifecycle) download(obj *v3.NodeDriver) (*v3.NodeDriver, error) {
 			}
 		}
 
-		if field.Type == "password" || userCredFields[name] {
+		if field.Type == "password" && !SSHKeyFields[name] || userCredFields[name] {
 			credField := field
 			credField.Required = true
 			if val, ok := defaults[name]; ok {
@@ -197,9 +211,13 @@ func (m *Lifecycle) download(obj *v3.NodeDriver) (*v3.NodeDriver, error) {
 			}
 			credFields[name] = credField
 		}
+
+		if _, ok := SSHKeyFields[name]; ok {
+			field.Type = "password"
+		}
+
 		resourceFields[name] = field
 	}
-
 	dynamicSchema := &v3.DynamicSchema{
 		Spec: v3.DynamicSchemaSpec{
 			ResourceFields: resourceFields,

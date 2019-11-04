@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mrjones/oauth"
 	"github.com/pkg/errors"
@@ -376,21 +377,22 @@ func (c *client) GetBranches(repoURL string, accessToken string) ([]string, erro
 	}
 
 	url := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/branches", c.BaseURL, owner, repo)
-
-	b, err := c.getFromBitbucket(url, accessToken)
-	if err != nil {
-		return nil, err
-	}
-	var branches PaginatedBranches
-	if err := json.Unmarshal(b, &branches); err != nil {
-		return nil, err
-	}
-	result := []string{}
-	for _, b := range branches.Values {
-		if b.Type != "BRANCH" {
-			continue
+	hasNext := true
+	var result []string
+	for hasNext {
+		b, err := c.getFromBitbucket(url, accessToken)
+		if err != nil {
+			return nil, err
 		}
-		result = append(result, b.DisplayID)
+		var branches PaginatedBranches
+		if err := json.Unmarshal(b, &branches); err != nil {
+			return nil, err
+		}
+		for _, b := range branches.Values {
+			result = append(result, b.DisplayID)
+		}
+		hasNext = !branches.IsLastPage
+		url = fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/branches?start=%d", c.BaseURL, owner, repo, branches.NextPageStart)
 	}
 	return result, nil
 }
@@ -519,6 +521,7 @@ func (c *client) doRequestToBitbucket(method string, url string, accessToken str
 	if err != nil {
 		return nil, err
 	}
+	client.Timeout = 30 * time.Second
 	q := req.URL.Query()
 	if method == http.MethodGet {
 		q.Set("limit", maxPerPage)

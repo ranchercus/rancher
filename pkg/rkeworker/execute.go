@@ -1,5 +1,3 @@
-// +build !windows
-
 package rkeworker
 
 import (
@@ -9,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/rancher/norman/types"
@@ -38,7 +37,12 @@ func ExecutePlan(ctx context.Context, nodeConfig *NodeConfig, writeCertOnly bool
 
 	for name, process := range nodeConfig.Processes {
 		if strings.Contains(name, "sidekick") || strings.Contains(name, "share-mnt") {
-			if err := runProcess(ctx, name, process, false, false); err != nil {
+			// windows dockerfile VOLUME declaration must to satisfy one of them:
+			// 	- a non-existing or empty directory
+			//  - a drive other than C:
+			// so we could use a script to **start** the container to put expected resources into the "shared" directory,
+			// like the action of `/usr/bin/sidecar.ps1` for windows rke-tools container
+			if err := runProcess(ctx, name, process, runtime.GOOS == "windows", false); err != nil {
 				return err
 			}
 		}

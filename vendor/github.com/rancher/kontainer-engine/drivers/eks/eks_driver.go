@@ -42,55 +42,49 @@ const (
 
 var amiForRegionAndVersion = map[string]map[string]string{
 	"1.13": map[string]string{
-		"us-east-2":      "ami-0355b5edf93d47112",
-		"us-east-1":      "ami-08198f90fe8bc57f0",
-		"us-west-2":      "ami-0dc5bf48daa40eb35",
-		"ap-east-1":      "ami-056314bd2d2acbdc1",
-		"ap-south-1":     "ami-00f4cff050d28ee2d",
-		"ap-northeast-1": "ami-0262013b4d50142a2",
-		"ap-northeast-2": "ami-0d9a543e7c4279c11",
-		"ap-southeast-1": "ami-0013f4890e2ce167b",
-		"ap-southeast-2": "ami-01cd15b342b7edf5e",
-		"eu-central-1":   "ami-01ffee931e45bb6bf",
-		"eu-west-1":      "ami-00ea6211202297fe8",
-		"eu-west-2":      "ami-0ef7099142dae7023",
-		"eu-west-3":      "ami-00cc28b5bcb9dc724",
-		"eu-north-1":     "ami-01d7a7c38f882ef68",
-		"me-south-1":     "ami-0ae4a6a2950a3546e",
+		"us-east-2":      "ami-0485258c2d1c3608f",
+		"us-east-1":      "ami-0f2e8e5663e16b436",
+		"us-west-2":      "ami-03a55127c613349a7",
+		"ap-south-1":     "ami-0a9b1c1807b1a40ab",
+		"ap-northeast-1": "ami-0fde798d17145fae1",
+		"ap-northeast-2": "ami-07fd7609df6c8e39b",
+		"ap-southeast-1": "ami-0361e14efd56a71c7",
+		"ap-southeast-2": "ami-0237d87bc27daba65",
+		"eu-central-1":   "ami-0b7127e7a2a38802a",
+		"eu-west-1":      "ami-00ac2e6b3cb38a9b9",
+		"eu-west-2":      "ami-0147919d2ff9a6ad5",
+		"eu-west-3":      "ami-0537ee9329c1628a2",
+		"eu-north-1":     "ami-0fd05922165907b85",
 	},
 	"1.12": map[string]string{
-		"us-east-2":      "ami-0d60b7264ed85e022",
-		"us-east-1":      "ami-0259ce67309f76e0b",
-		"us-west-2":      "ami-0315dd35bf204311d",
-		"ap-east-1":      "ami-0fafd65fe31195cb5",
-		"ap-south-1":     "ami-0d9c7adc50f0c3f04",
-		"ap-northeast-1": "ami-08b2cecec9f2d5964",
-		"ap-northeast-2": "ami-0bbe543cd7fc2acd1",
-		"ap-southeast-1": "ami-07696966feacc8e7b",
-		"ap-southeast-2": "ami-07621fc1a7675f06c",
-		"eu-central-1":   "ami-0fe22fc725c19301f",
-		"eu-west-1":      "ami-0a6be9528ebb8999d",
-		"eu-west-2":      "ami-0a8dc5b3290842d3e",
-		"eu-west-3":      "ami-01dbd2d713c939649",
-		"eu-north-1":     "ami-0586fb63f5c466e3c",
-		"me-south-1":     "ami-08eab8b7cd9f43bd0",
+		"us-east-2":      "ami-0fe61ae4c397e710d",
+		"us-east-1":      "ami-0e380e0a62d368837",
+		"us-west-2":      "ami-0355c210cb3f58aa2",
+		"ap-south-1":     "ami-01b6a163133c31994",
+		"ap-northeast-1": "ami-0a9b3f8b4b65b402b",
+		"ap-northeast-2": "ami-069f6a654a8795f72",
+		"ap-southeast-1": "ami-03737a1ac334a5767",
+		"ap-southeast-2": "ami-07580768e8538626f",
+		"eu-central-1":   "ami-0ee5ca4231511cafc",
+		"eu-west-1":      "ami-0404d23c7e8188740",
+		"eu-west-2":      "ami-07346d8553f83f9d6",
+		"eu-west-3":      "ami-038cb36289174bac4",
+		"eu-north-1":     "ami-03e60b5a990893129",
 	},
 	"1.11": map[string]string{
-		"us-east-2":      "ami-0f01aa60d08b56b51",
-		"us-east-1":      "ami-0277d42c17d2fd9f6",
-		"us-west-2":      "ami-0e024bc930f00f7a2",
-		"ap-east-1":      "ami-01efe02a8386b4448",
-		"ap-south-1":     "ami-0fee6e6300019359b",
-		"ap-northeast-1": "ami-0acea8b886f0e3f8f",
-		"ap-northeast-2": "ami-01e754bb06dedfd13",
-		"ap-southeast-1": "ami-04aff8301e51a47e4",
-		"ap-southeast-2": "ami-0cb611c369549e9c9",
-		"eu-central-1":   "ami-0157324517811932f",
-		"eu-west-1":      "ami-0ed6bcde59efbec8a",
-		"eu-west-2":      "ami-0b2d004b35f3153c4",
-		"eu-west-3":      "ami-0c592c8c15d5a2824",
-		"eu-north-1":     "ami-019c885c71264830f",
-		"me-south-1":     "ami-0f19239ec6bfc1fd4",
+		"us-east-2":      "ami-03c6648b74285020f",
+		"us-east-1":      "ami-0a5f5d5b0f6f58199",
+		"us-west-2":      "ami-057d1c0dcb254a878",
+		"ap-south-1":     "ami-00f1adebe5ab9a431",
+		"ap-northeast-1": "ami-0a0b6606652f9b3b9",
+		"ap-northeast-2": "ami-0c84b3f055cda1afb",
+		"ap-southeast-1": "ami-05e92412054db3f87",
+		"ap-southeast-2": "ami-07eb76498b1ba6cd6",
+		"eu-central-1":   "ami-0234bc9c2b341aa02",
+		"eu-west-1":      "ami-06902949103360023",
+		"eu-west-2":      "ami-0db100ad46c7966d2",
+		"eu-west-3":      "ami-052046d313576d0ba",
+		"eu-north-1":     "ami-02ebf24da505128f9",
 	},
 	"1.10": map[string]string{
 		"us-east-2":      "ami-0295a10750423107d",
@@ -133,6 +127,7 @@ type state struct {
 
 	MinimumASGSize int64
 	MaximumASGSize int64
+	DesiredASGSize int64
 	NodeVolumeSize *int64
 
 	UserData string
@@ -211,6 +206,13 @@ func (d *Driver) GetDriverCreateOptions(ctx context.Context) (*types.DriverFlags
 			DefaultInt: 3,
 		},
 	}
+	driverFlag.Options["desired-nodes"] = &types.Flag{
+		Type:  types.IntType,
+		Usage: "The desired number of worker nodes",
+		Default: &types.Default{
+			DefaultInt: 3,
+		},
+	}
 	driverFlag.Options["node-volume-size"] = &types.Flag{
 		Type:  types.IntPointerType,
 		Usage: "The volume size for each node",
@@ -272,7 +274,7 @@ func (d *Driver) GetDriverCreateOptions(ctx context.Context) (*types.DriverFlags
 	driverFlag.Options["kubernetes-version"] = &types.Flag{
 		Type:    types.StringType,
 		Usage:   "The kubernetes master version",
-		Default: &types.Default{DefaultString: "1.10"},
+		Default: &types.Default{DefaultString: "1.13"},
 	}
 
 	return &driverFlag, nil
@@ -286,7 +288,7 @@ func (d *Driver) GetDriverUpdateOptions(ctx context.Context) (*types.DriverFlags
 	driverFlag.Options["kubernetes-version"] = &types.Flag{
 		Type:    types.StringType,
 		Usage:   "The kubernetes version to update",
-		Default: &types.Default{DefaultString: "1.10"},
+		Default: &types.Default{DefaultString: "1.13"},
 	}
 	driverFlag.Options["access-key"] = &types.Flag{
 		Type:  types.StringType,
@@ -318,6 +320,7 @@ func getStateFromOptions(driverOptions *types.DriverOptions) (state, error) {
 	state.InstanceType = options.GetValueFromDriverOptions(driverOptions, types.StringType, "instance-type", "instanceType").(string)
 	state.MinimumASGSize = options.GetValueFromDriverOptions(driverOptions, types.IntType, "minimum-nodes", "minimumNodes").(int64)
 	state.MaximumASGSize = options.GetValueFromDriverOptions(driverOptions, types.IntType, "maximum-nodes", "maximumNodes").(int64)
+	state.DesiredASGSize = options.GetValueFromDriverOptions(driverOptions, types.IntType, "desired-nodes", "desiredNodes").(int64)
 	state.NodeVolumeSize, _ = options.GetValueFromDriverOptions(driverOptions, types.IntPointerType, "node-volume-size", "nodeVolumeSize").(*int64)
 	state.VirtualNetwork = options.GetValueFromDriverOptions(driverOptions, types.StringType, "virtual-network", "virtualNetwork").(string)
 	state.Subnets = options.GetValueFromDriverOptions(driverOptions, types.StringSliceType, "subnets").(*types.StringSlice).Value
@@ -369,8 +372,20 @@ func (state *state) validate() error {
 		return fmt.Errorf("maximum nodes must be greater than 0")
 	}
 
+	if state.DesiredASGSize < 1 {
+		return fmt.Errorf("desired nodes must be greater than 0")
+	}
+
 	if state.MaximumASGSize < state.MinimumASGSize {
 		return fmt.Errorf("maximum nodes cannot be less than minimum nodes")
+	}
+
+	if state.DesiredASGSize < state.MinimumASGSize {
+		return fmt.Errorf("desired nodes cannot be less than minimum nodes")
+	}
+
+	if state.DesiredASGSize > state.MaximumASGSize {
+		return fmt.Errorf("desired nodes cannot be greater than maximum nodes")
 	}
 
 	if state.NodeVolumeSize != nil && *state.NodeVolumeSize < 1 {
@@ -671,6 +686,8 @@ func (d *Driver) Create(ctx context.Context, options *types.DriverOptions, _ *ty
 				int(state.MinimumASGSize)))},
 			{ParameterKey: aws.String("NodeAutoScalingGroupMaxSize"), ParameterValue: aws.String(strconv.Itoa(
 				int(state.MaximumASGSize)))},
+			{ParameterKey: aws.String("NodeAutoScalingGroupDesiredCapacity"), ParameterValue: aws.String(strconv.Itoa(
+				int(state.DesiredASGSize)))},
 			{ParameterKey: aws.String("NodeVolumeSize"), ParameterValue: aws.String(strconv.Itoa(
 				int(volumeSize)))},
 			{ParameterKey: aws.String("NodeInstanceType"), ParameterValue: aws.String(state.InstanceType)},
@@ -849,7 +866,7 @@ func (d *Driver) waitForClusterReady(svc *eks.EKS, state state) (*eks.DescribeCl
 	var err error
 
 	status := ""
-	for status != "ACTIVE" {
+	for status != eks.ClusterStatusActive {
 		time.Sleep(30 * time.Second)
 
 		logrus.Infof("Waiting for cluster to finish provisioning")
@@ -870,6 +887,12 @@ func (d *Driver) waitForClusterReady(svc *eks.EKS, state state) (*eks.DescribeCl
 		}
 
 		status = *cluster.Cluster.Status
+
+		if status == eks.ClusterStatusFailed {
+			return nil, fmt.Errorf("creation failed for cluster named %q with ARN %q",
+				aws.StringValue(cluster.Cluster.Name),
+				aws.StringValue(cluster.Cluster.Arn))
+		}
 	}
 
 	return cluster, nil

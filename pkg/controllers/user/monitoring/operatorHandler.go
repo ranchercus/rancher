@@ -5,9 +5,10 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/rancher/rancher/pkg/app/utils"
+
 	"github.com/pkg/errors"
 	"github.com/rancher/rancher/pkg/monitoring"
-	"github.com/rancher/rancher/pkg/settings"
 	mgmtv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	projectv3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/sirupsen/logrus"
@@ -150,14 +151,12 @@ func allOwnedProjectsMonitoringDisabling(projectClient mgmtv3.ProjectInterface) 
 func deploySystemMonitor(cluster *mgmtv3.Cluster, app *appHandler) (backErr error) {
 	appName, appTargetNamespace := monitoring.SystemMonitoringInfo()
 
-	appCatalogID := settings.SystemMonitoringCatalogID.Get()
-
-	appDeployProjectID, err := monitoring.GetSystemProjectID(app.cattleProjectClient)
+	appDeployProjectID, err := utils.GetSystemProjectID(cluster.Name, app.projectLister)
 	if err != nil {
 		return errors.Wrap(err, "failed to get System Project ID")
 	}
 
-	appProjectName, err := monitoring.EnsureAppProjectName(app.agentNamespaceClient, appDeployProjectID, cluster.Name, appTargetNamespace)
+	appProjectName, err := utils.EnsureAppProjectName(app.agentNamespaceClient, appDeployProjectID, cluster.Name, appTargetNamespace)
 	if err != nil {
 		return errors.Wrap(err, "failed to ensure monitoring project name")
 	}
@@ -171,10 +170,12 @@ func deploySystemMonitor(cluster *mgmtv3.Cluster, app *appHandler) (backErr erro
 	mustAppAnswers := map[string]string{
 		"operator.apiGroup":     monitoring.APIVersion.Group,
 		"operator.nameOverride": "prometheus-operator",
+		"operator-init.enabled": "true",
 	}
 
 	// take operator answers from overwrite answers
-	for ansKey, ansVal := range monitoring.GetOverwroteAppAnswers(cluster.Annotations) {
+	answers, version := monitoring.GetOverwroteAppAnswersAndVersion(cluster.Annotations)
+	for ansKey, ansVal := range answers {
 		if strings.HasPrefix(ansKey, "operator.") {
 			appAnswers[ansKey] = ansVal
 		}
@@ -193,6 +194,11 @@ func deploySystemMonitor(cluster *mgmtv3.Cluster, app *appHandler) (backErr erro
 	annotations := map[string]string{
 		"cluster.cattle.io/addon": appName,
 		creatorIDAnno:             creator.Name,
+	}
+
+	appCatalogID, err := monitoring.GetMonitoringCatalogID(version, app.catalogTemplateLister)
+	if err != nil {
+		return err
 	}
 
 	targetApp := &projectv3.App{
@@ -221,7 +227,7 @@ func deploySystemMonitor(cluster *mgmtv3.Cluster, app *appHandler) (backErr erro
 		forceRedeploy = true
 	}
 
-	_, err = monitoring.DeployApp(app.cattleAppClient, appDeployProjectID, targetApp, forceRedeploy)
+	_, err = utils.DeployApp(app.cattleAppClient, appDeployProjectID, targetApp, forceRedeploy)
 	if err != nil {
 		return errors.Wrap(err, "failed to ensure prometheus operator app")
 	}

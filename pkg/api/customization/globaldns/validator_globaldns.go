@@ -10,7 +10,6 @@ import (
 	gaccess "github.com/rancher/rancher/pkg/api/customization/globalnamespaceaccess"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	client "github.com/rancher/types/client/management/v3"
-
 	"k8s.io/apimachinery/pkg/api/meta"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -35,7 +34,6 @@ func (w Wrapper) Validator(request *types.APIContext, schema *types.Schema, data
 	}
 
 	var targetProjects []string
-	var accessType string
 	ma := gaccess.MemberAccess{
 		Users:     w.Users,
 		GrLister:  w.GrLister,
@@ -45,7 +43,6 @@ func (w Wrapper) Validator(request *types.APIContext, schema *types.Schema, data
 	callerID := request.Request.Header.Get(gaccess.ImpersonateUserHeader)
 	if request.Method == http.MethodPost {
 		// create request, caller is owner/creator
-		accessType = gaccess.OwnerAccess
 		// Request is POST, hence global DNS is being created.
 		// if multiclusterapp ID is provided check access to its projects
 		mcappID := convert.ToString(data[client.GlobalDNSFieldMultiClusterAppID])
@@ -85,7 +82,7 @@ func (w Wrapper) Validator(request *types.APIContext, schema *types.Schema, data
 	if !ok {
 		return fmt.Errorf("GlobalDNS %v has no creatorId annotation", metaAccessor.GetName())
 	}
-	accessType, err = ma.GetAccessTypeOfCaller(callerID, creatorID, gDNS.Name, gDNS.Spec.Members)
+	accessType, err := ma.GetAccessTypeOfCaller(callerID, creatorID, gDNS.Name, gDNS.Spec.Members)
 	if err != nil {
 		return err
 	}

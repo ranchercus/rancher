@@ -2,8 +2,8 @@ package common
 
 import (
 	"net/url"
-	"strings"
 
+	cutils "github.com/rancher/rancher/pkg/catalog/utils"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/settings"
 	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
@@ -11,10 +11,6 @@ import (
 )
 
 type InjectAppArgsFunc func(obj *v3.App) (content map[string]string)
-
-const (
-	systemCatalogName = "system-library"
-)
 
 var (
 	extraArgsFuncs = []InjectAppArgsFunc{
@@ -26,17 +22,19 @@ var (
 func injectDefaultRegistry(obj *v3.App) map[string]string {
 	values, err := url.Parse(obj.Spec.ExternalID)
 	if err != nil {
-		logrus.Errorf("check catalog type failed: %s", err.Error())
-	}
-
-	catalogWithNamespace := values.Query().Get("catalog")
-	split := strings.SplitN(catalogWithNamespace, "/", 2)
-	catalog := split[len(split)-1]
-
-	reg := settings.SystemDefaultRegistry.Get()
-	if catalog != systemCatalogName || reg == "" {
+		logrus.Errorf("parsing externalID failed: %s", err.Error())
 		return nil
 	}
+
+	if values.Query().Get("catalog") != cutils.SystemLibraryName {
+		return nil
+	}
+
+	reg := settings.SystemDefaultRegistry.Get()
+	if reg == "" {
+		return nil
+	}
+
 	return map[string]string{"systemDefaultRegistry": reg}
 }
 

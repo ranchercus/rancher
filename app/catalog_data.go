@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 
+	"github.com/rancher/rancher/pkg/catalog/helm"
+	"github.com/rancher/rancher/pkg/settings"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/config"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -109,18 +112,29 @@ func exponentialCatalogUpdate(catalogClient v3.CatalogInterface, desiredCatalog 
 }
 
 func syncCatalogs(management *config.ManagementContext) error {
+	var bundledMode bool
+	if strings.ToLower(settings.SystemCatalog.Get()) == "bundled" {
+		bundledMode = true
+	}
 	return utilerrors.AggregateGoroutines(
 		// add charts
 		func() error {
-			return doAddCatalogs(management, libraryName, libraryURL, libraryBranch)
+			// If running in bundled mode don't turn on the normal library by default
+			if bundledMode {
+				return nil
+			}
+			return doAddCatalogs(management, libraryName, libraryURL, libraryBranch, bundledMode)
 		},
 		// add rancher-charts
 		func() error {
-			if err := doAddCatalogs(management, systemLibraryName, systemLibraryURL, systemLibraryBranch); err != nil {
+			if err := doAddCatalogs(management, systemLibraryName, systemLibraryURL, systemLibraryBranch, bundledMode); err != nil {
 				return err
 			}
 			desiredDefaultURL := systemLibraryURL
-			desiredDefaultBranch := systemLibraryBranch
+			desiredDefaultBranch := ""
+			if devMode := os.Getenv("CATTLE_DEV_MODE"); devMode != "" {
+				desiredDefaultBranch = "dev"
+			}
 
 			if fromEnvURL := os.Getenv("CATTLE_SYSTEM_CHART_DEFAULT_URL"); fromEnvURL != "" {
 				desiredDefaultURL = fromEnvURL
@@ -130,13 +144,23 @@ func syncCatalogs(management *config.ManagementContext) error {
 				desiredDefaultBranch = fromEnvBranch
 			}
 
+			if desiredDefaultBranch == "" {
+				panic(fmt.Errorf("If you are developing, set CATTLE_DEV_MODE environment variable to \"true\"." +
+					"Otherwise, set CATTLE_SYSTEM_CHART_DEFAULT_to desired default branch."))
+			}
+
 			return updateCatalogURL(management.Management.Catalogs(""), desiredDefaultURL, desiredDefaultBranch)
 		},
 	)
 }
 
-func doAddCatalogs(management *config.ManagementContext, name, url, branch string) error {
+func doAddCatalogs(management *config.ManagementContext, name, url, branch string, bundledMode bool) error {
 	catalogClient := management.Management.Catalogs("")
+
+	kind := helm.KindHelmGit
+	if bundledMode {
+		kind = helm.KindHelmInternal
+	}
 
 	_, err := catalogClient.Get(name, metav1.GetOptions{})
 	if err != nil && !errors.IsNotFound(err) {
@@ -148,7 +172,7 @@ func doAddCatalogs(management *config.ManagementContext, name, url, branch strin
 			},
 			Spec: v3.CatalogSpec{
 				URL:         url,
-				CatalogKind: "helm:git",
+				CatalogKind: kind,
 				Branch:      branch,
 			},
 		}

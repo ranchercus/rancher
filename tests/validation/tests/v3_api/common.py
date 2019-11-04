@@ -218,8 +218,11 @@ def validate_workload(p_client, workload, type, ns_name, pod_count=1,
     # scheduled wait time
     if type == "cronJob":
         time.sleep(wait_for_cron_pods)
+    pods = wait_for_pods_in_workload(p_client, workload, pod_count)
+    assert len(pods) == pod_count
     pods = p_client.list_pod(workloadId=workload.id).data
     assert len(pods) == pod_count
+
     for pod in pods:
         wait_for_pod_to_running(p_client, pod)
     wl_result = execute_kubectl_cmd(
@@ -440,7 +443,7 @@ def validate_ingress(p_client, cluster, workloads, host, path,
     nodes = get_schedulable_nodes(cluster)
     target_name_list = get_target_names(p_client, workloads)
     for node in nodes:
-        host_ip = node.externalIpAddress
+        host_ip = resolve_node_ip(node)
         cmd = curl_args + " http://" + host_ip + path
         validate_http_response(cmd, target_name_list)
 
@@ -795,7 +798,8 @@ def delete_cluster(client, cluster):
             ip_filter['Values'] = ip_list
             filters.append(ip_filter)
             for node in nodes:
-                ip_list.append(node.externalIpAddress)
+                host_ip = resolve_node_ip(node)
+                ip_list.append(host_ip)
             assert len(ip_filter) > 0
             print(ip_filter)
             aws_nodes = AmazonWebServices().get_nodes(filters)
@@ -991,7 +995,7 @@ def validate_hostPort(p_client, workload, source_port, cluster):
                 target_name_list.append(pod.name)
                 break
         if len(target_name_list) > 0:
-            host_ip = node.externalIpAddress
+            host_ip = resolve_node_ip(node)
             curl_cmd = " http://" + host_ip + ":" + \
                        str(source_port) + "/name.html"
             validate_http_response(curl_cmd, target_name_list)
@@ -1015,7 +1019,7 @@ def validate_nodePort(p_client, workload, cluster):
         target_name_list.append(pod.name)
     print("target name list:" + str(target_name_list))
     for node in nodes:
-        host_ip = node.externalIpAddress
+        host_ip = resolve_node_ip(node)
         curl_cmd = " http://" + host_ip + ":" + \
                    str(source_port) + "/name.html"
         validate_http_response(curl_cmd, target_name_list)
@@ -1132,19 +1136,17 @@ def wait_for_mcapp_to_active(client, multiClusterApp,
 
 def wait_for_app_to_active(client, app_id,
                            timeout=DEFAULT_MULTI_CLUSTER_APP_TIMEOUT):
-    app_data = client.list_app(name=app_id).data
     start = time.time()
-    assert len(app_data) == 1, "Cannot find app"
-    application = app_data[0]
-    while application.state != "active":
+    while True:
+        app_data = client.list_app(name=app_id).data
+        if len(app_data) == 1:
+            application = app_data[0]
+            if application.state == "active":
+                return application
         if time.time() - start > timeout:
             raise AssertionError(
                 "Timed out waiting for state to get to active")
         time.sleep(.5)
-        app = client.list_app(name=app_id).data
-        assert len(app) == 1
-        application = app[0]
-    return application
 
 
 def validate_response_app_endpoint(p_client, appId):
@@ -1164,3 +1166,11 @@ def validate_response_app_endpoint(p_client, appId):
             except requests.ConnectionError:
                 print("failed to connect")
                 assert False, "failed to connect to the app"
+
+
+def resolve_node_ip(node):
+    if hasattr(node, 'externalIpAddress'):
+        node_ip = node.externalIpAddress
+    else:
+        node_ip = node.ipAddress
+    return node_ip

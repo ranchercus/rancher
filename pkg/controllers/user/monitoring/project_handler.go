@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/rancher/rancher/pkg/app/utils"
 	"github.com/rancher/rancher/pkg/monitoring"
 	"github.com/rancher/rancher/pkg/ref"
-	"github.com/rancher/rancher/pkg/settings"
 	mgmtv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
-	"github.com/sirupsen/logrus"
 	k8scorev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,10 +37,6 @@ func (ph *projectHandler) sync(key string, project *mgmtv3.Project) (runtime.Obj
 		return project, nil
 	}
 
-	if !mgmtv3.NamespaceBackedResource.IsTrue(project) || !mgmtv3.ProjectConditionInitialRolesPopulated.IsTrue(project) {
-		return project, nil
-	}
-
 	clusterID := project.Spec.ClusterName
 	cluster, err := ph.cattleClusterClient.Get(clusterID, metav1.GetOptions{})
 	if err != nil {
@@ -53,75 +48,29 @@ func (ph *projectHandler) sync(key string, project *mgmtv3.Project) (runtime.Obj
 	src := project
 	cpy := src.DeepCopy()
 
-	if err := ph.doProjectGraphsSync(cpy); err != nil {
-		return project, errors.Wrapf(err, "failed to add project graph to project %s", projectTag)
-	}
-
-	if err := ph.doSync(cpy, clusterName); err != nil {
-		return project, errors.Wrapf(err, "failed to sync project %s", projectTag)
-	}
-
+	err = ph.doSync(cpy, clusterName)
 	if !reflect.DeepEqual(cpy, src) {
-		updated, err := ph.cattleProjectClient.Update(cpy)
-		if err != nil {
-			return project, errors.Wrapf(err, "failed to update project %s", projectTag)
+		updated, updateErr := ph.cattleProjectClient.Update(cpy)
+		if updateErr != nil {
+			return project, errors.Wrapf(updateErr, "failed to update Project %s", projectTag)
 		}
 
 		cpy = updated
+	}
+
+	if err != nil {
+		err = errors.Wrapf(err, "unable to sync Project %s", projectTag)
 	}
 
 	return cpy, err
 }
 
 func (ph *projectHandler) doSync(project *mgmtv3.Project, clusterName string) error {
-	appName, appTargetNamespace := monitoring.ProjectMonitoringInfo(project.Name)
-	var err error
-	if project.Spec.EnableProjectMonitoring {
-		_, err = mgmtv3.ProjectConditionMonitoringEnabled.Do(project, func() (runtime.Object, error) {
-			appProjectName, err := ph.ensureAppProjectName(appTargetNamespace, project)
-			if err != nil {
-				return project, errors.Wrap(err, "failed to ensure monitoring project name")
-			}
-			if err := ph.deployApp(appName, appTargetNamespace, appProjectName, project, clusterName); err != nil {
-				return project, errors.Wrap(err, "failed to deploy monitoring")
-			}
-			if err := ph.detectAppComponentsWhileInstall(appName, appTargetNamespace, project); err != nil {
-				return project, errors.Wrap(err, "failed to detect the installation status of monitoring components")
-			}
-			return project, nil
-		})
-		// set unknown when error to keep consistency as before. TODO, we should add a new condition for monitoring disabled
-		if err != nil {
-			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
-		}
-	} else if enabledStatus := mgmtv3.ProjectConditionMonitoringEnabled.GetStatus(project); enabledStatus != "" && enabledStatus != "False" {
-		err = func() error {
-			if err := ph.app.withdrawApp(project.Spec.ClusterName, appName, appTargetNamespace); err != nil {
-				return errors.Wrap(err, "failed to withdraw monitoring")
-			}
-
-			if err := ph.detectAppComponentsWhileUninstall(appName, appTargetNamespace, project); err != nil {
-				return errors.Wrap(err, "failed to detect the uninstallation status of monitoring components")
-			}
-			return nil
-		}()
-
-		if err == nil {
-			mgmtv3.ProjectConditionMonitoringEnabled.False(project)
-			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, "")
-		} else {
-			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
-			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, err.Error())
-		}
+	if !mgmtv3.NamespaceBackedResource.IsTrue(project) && !mgmtv3.ProjectConditionInitialRolesPopulated.IsTrue(project) {
+		return nil
 	}
-
-	return nil
-}
-
-// doProjectGraphsSync creates the metric graphs per project for cluster monitoring
-func (ph *projectHandler) doProjectGraphsSync(project *mgmtv3.Project) error {
 	_, err := mgmtv3.ProjectConditionMetricExpressionDeployed.DoUntilTrue(project, func() (runtime.Object, error) {
-		projectName := ref.FromStrings(project.Namespace, project.Name)
+		projectName := fmt.Sprintf("%s:%s", project.Spec.ClusterName, project.Name)
 
 		for _, graph := range preDefinedProjectGraph {
 			newObj := graph.DeepCopy()
@@ -134,16 +83,56 @@ func (ph *projectHandler) doProjectGraphsSync(project *mgmtv3.Project) error {
 
 		return project, nil
 	})
-	// ignore error here becuase we set error in condition
 	if err != nil {
-		logrus.Errorf("failed to apply metric expression,err: %s", err.Error())
+		return errors.Wrap(err, "failed to apply metric expression")
+	}
+
+	appName, appTargetNamespace := monitoring.ProjectMonitoringInfo(project.Name)
+
+	if project.Spec.EnableProjectMonitoring {
+		appProjectName, err := ph.ensureAppProjectName(appTargetNamespace, project)
+		if err != nil {
+			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
+			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, err.Error())
+			return errors.Wrap(err, "failed to ensure monitoring project name")
+		}
+
+		if err := ph.deployApp(appName, appTargetNamespace, appProjectName, project, clusterName); err != nil {
+			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
+			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, err.Error())
+			return errors.Wrap(err, "failed to deploy monitoring")
+		}
+
+		if err := ph.detectAppComponentsWhileInstall(appName, appTargetNamespace, project); err != nil {
+			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
+			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, err.Error())
+			return errors.Wrap(err, "failed to detect the installation status of monitoring components")
+		}
+
+		mgmtv3.ProjectConditionMonitoringEnabled.True(project)
+		mgmtv3.ProjectConditionMonitoringEnabled.Message(project, "")
+	} else if project.Status.MonitoringStatus != nil {
+		if err := ph.app.withdrawApp(project.Spec.ClusterName, appName, appTargetNamespace); err != nil {
+			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
+			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, err.Error())
+			return errors.Wrap(err, "failed to withdraw monitoring")
+		}
+
+		if err := ph.detectAppComponentsWhileUninstall(appName, appTargetNamespace, project); err != nil {
+			mgmtv3.ProjectConditionMonitoringEnabled.Unknown(project)
+			mgmtv3.ProjectConditionMonitoringEnabled.Message(project, err.Error())
+			return errors.Wrap(err, "failed to detect the uninstallation status of monitoring components")
+		}
+
+		mgmtv3.ProjectConditionMonitoringEnabled.False(project)
+		mgmtv3.ProjectConditionMonitoringEnabled.Message(project, "")
 	}
 
 	return nil
 }
 
 func (ph *projectHandler) ensureAppProjectName(appTargetNamespace string, project *mgmtv3.Project) (string, error) {
-	appProjectName, err := monitoring.EnsureAppProjectName(ph.app.agentNamespaceClient, project.Name, project.Spec.ClusterName, appTargetNamespace)
+	appProjectName, err := utils.EnsureAppProjectName(ph.app.agentNamespaceClient, project.Name, project.Spec.ClusterName, appTargetNamespace)
 	if err != nil {
 		return "", err
 	}
@@ -198,7 +187,10 @@ func (ph *projectHandler) deployApp(appName, appTargetNamespace string, appProje
 		"prometheus.cluster.alertManagerNamespace": clusterAlertManagerSvcNamespaces,
 	}
 
-	appAnswers := monitoring.OverwriteAppAnswers(optionalAppAnswers, project.Annotations)
+	appAnswers, appCatalogID, err := monitoring.OverwriteAppAnswersAndCatalogID(optionalAppAnswers, project.Annotations, ph.app.catalogTemplateLister)
+	if err != nil {
+		return err
+	}
 
 	// cannot overwrite mustAppAnswers
 	for mustKey, mustVal := range mustAppAnswers {
@@ -219,7 +211,6 @@ func (ph *projectHandler) deployApp(appName, appTargetNamespace string, appProje
 		return err
 	}
 
-	appCatalogID := settings.SystemMonitoringCatalogID.Get()
 	app := &v3.App{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{creatorIDAnno: creator.Name},
@@ -236,7 +227,7 @@ func (ph *projectHandler) deployApp(appName, appTargetNamespace string, appProje
 		},
 	}
 
-	deployed, err := monitoring.DeployApp(ph.app.cattleAppClient, appDeployProjectID, app, false)
+	deployed, err := utils.DeployApp(ph.app.cattleAppClient, appDeployProjectID, app, false)
 	if err != nil {
 		return err
 	}

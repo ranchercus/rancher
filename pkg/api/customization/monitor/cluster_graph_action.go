@@ -15,8 +15,10 @@ import (
 	"github.com/rancher/norman/types/convert"
 	"github.com/rancher/rancher/pkg/clustermanager"
 	monitorutil "github.com/rancher/rancher/pkg/monitoring"
+	"github.com/rancher/rancher/pkg/project"
 	"github.com/rancher/rancher/pkg/ref"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
+	pv3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	mgmtclientv3 "github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/config"
 	"github.com/rancher/types/config/dialer"
@@ -33,12 +35,16 @@ func NewClusterGraphHandler(dialerFactory dialer.Factory, clustermanager *cluste
 	return &ClusterGraphHandler{
 		dialerFactory:  dialerFactory,
 		clustermanager: clustermanager,
+		projectLister:  clustermanager.ScaledContext.Management.Projects(metav1.NamespaceAll).Controller().Lister(),
+		appLister:      clustermanager.ScaledContext.Project.Apps(metav1.NamespaceAll).Controller().Lister(),
 	}
 }
 
 type ClusterGraphHandler struct {
 	dialerFactory  dialer.Factory
 	clustermanager *clustermanager.Manager
+	projectLister  v3.ProjectLister
+	appLister      pv3.AppLister
 }
 
 func (h *ClusterGraphHandler) QuerySeriesAction(actionName string, action *types.Action, apiContext *types.APIContext) error {
@@ -63,16 +69,32 @@ func (h *ClusterGraphHandler) QuerySeriesAction(actionName string, action *types
 		return fmt.Errorf("get usercontext failed, %v", err)
 	}
 
+	reqContext, cancel := context.WithTimeout(context.Background(), prometheusReqTimeout)
+	defer cancel()
+
+	var svcName, svcNamespace, svcPort, token string
 	prometheusName, prometheusNamespace := monitorutil.ClusterMonitoringInfo()
-	token, err := getAuthToken(userContext, prometheusName, prometheusNamespace)
+	token, err = getAuthToken(userContext, prometheusName, prometheusNamespace)
 	if err != nil {
 		return err
 	}
 
-	reqContext, cancel := context.WithTimeout(context.Background(), prometheusReqTimeout)
-	defer cancel()
+	if inputParser.Input.Filters["resourceType"] == "istiocluster" {
+		inputParser.Input.MetricParams["namespace"] = ".*"
 
-	svcName, svcNamespace, svcPort := monitorutil.ClusterPrometheusEndpoint()
+		project, err := project.GetSystemProject(clusterName, h.projectLister)
+		if err != nil {
+			return err
+		}
+		app, err := h.appLister.Get(project.Name, monitorutil.IstioAppName)
+		if err != nil {
+			return err
+		}
+		svcName, svcNamespace, svcPort = monitorutil.IstioPrometheusEndpoint(app.Spec.Answers)
+	} else {
+		svcName, svcNamespace, svcPort = monitorutil.ClusterPrometheusEndpoint()
+	}
+
 	prometheusQuery, err := NewPrometheusQuery(reqContext, clusterName, token, svcNamespace, svcName, svcPort, h.dialerFactory, userContext)
 	if err != nil {
 		return err
@@ -142,8 +164,9 @@ type metricWrap struct {
 }
 
 func graph2Metrics(userContext *config.UserContext, mgmtClient v3.Interface, clusterName, resourceType, refGraphName string, metricSelector, detailsMetricSelector map[string]string, metricParams map[string]string, isDetails bool) ([]*metricWrap, error) {
+	projectName, _ := ref.Parse(refGraphName)
 	nodeLister := mgmtClient.Nodes(metav1.NamespaceAll).Controller().Lister()
-	newMetricParams, err := parseMetricParams(userContext, nodeLister, resourceType, clusterName, metricParams)
+	newMetricParams, err := parseMetricParams(userContext, nodeLister, resourceType, clusterName, projectName, metricParams)
 	if err != nil {
 		return nil, err
 	}

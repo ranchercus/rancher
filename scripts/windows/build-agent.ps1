@@ -1,33 +1,16 @@
-#Requires -Version 5.0
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
-& "$PSScriptRoot\version.ps1"
+Import-Module -WarningAction Ignore -Name "$PSScriptRoot\utils.psm1"
 
-$dirPath = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$rootPath = (Resolve-Path "$dirPath\..\..").Path
-$version = $env:VERSION
-$psVersion = $env:PS_VERSION
-$imageTag = "rancher/rancher-agent:$version"
+Invoke-Script -File "$PSScriptRoot\version.ps1"
 
-pushd $rootPath
-Write-Host "Running agent build"
-if ($version.endswith("-1803")) {
-    docker build `
-        --build-arg PS_VERSION=$psVersion `
-        --build-arg VERSION=$version `
-        -t $imageTag `
-        -f package\windows\Dockerfile.agent .
-} else {
-    docker build `
-        --isolation hyperv `
-        --build-arg PS_VERSION=$psVersion `
-        --build-arg VERSION=$version `
-        -t $imageTag `
-        -f package\windows\Dockerfile.agent .
-}
-if ($?) {
-    Write-Host "Built $imageTag"
-} else {
-    throw "Build $imageTag FAILED"
-}
-popd
+$DIR_PATH = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$SRC_PATH = (Resolve-Path "$DIR_PATH\..\..").Path
+cd $SRC_PATH
+
+$null = New-Item -Force -ItemType Directory -Path bin -ErrorAction Ignore
+$env:GOARCH=$env:ARCH
+$env:GOOS='windows'
+$env:CGO_ENABLED=0
+$LINKFLAGS = ('-X main.VERSION={0} -s -w -extldflags "-static"' -f $env:VERSION)
+go build -i -tags k8s -ldflags $LINKFLAGS -o .\bin\agent.exe .\pkg\agent

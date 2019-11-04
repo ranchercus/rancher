@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-
 	"github.com/docker/go-connections/nat"
 	"github.com/rancher/rke/hosts"
 	"github.com/rancher/rke/services"
@@ -24,6 +24,7 @@ import (
 const (
 	RKEContainerNameLabel  = "io.rancher.rke.container.name"
 	CattleProcessNameLabel = "io.cattle.process.name"
+	ShareMntContainerName  = "share-mnt"
 )
 
 type NodeConfig struct {
@@ -42,7 +43,7 @@ func runProcess(ctx context.Context, name string, p v3.Process, start, forceRest
 
 	args := filters.NewArgs()
 	args.Add("label", RKEContainerNameLabel+"="+name)
-	// to handle upgrades of old container
+	// to handle upgrades of containers created in v2.0.x
 	oldArgs := filters.NewArgs()
 	oldArgs.Add("label", CattleProcessNameLabel+"="+name)
 
@@ -82,7 +83,6 @@ func runProcess(ctx context.Context, name string, p v3.Process, start, forceRest
 			}
 		}
 	}
-
 	for i := 1; i < len(matchedContainers); i++ {
 		if err := remove(ctx, c, matchedContainers[i].ID); err != nil {
 			return err
@@ -90,23 +90,38 @@ func runProcess(ctx context.Context, name string, p v3.Process, start, forceRest
 	}
 
 	if len(matchedContainers) > 0 {
-		if strings.Contains(name, "share-mnt") {
-			inspect, err := c.ContainerInspect(ctx, matchedContainers[0].ID)
-			if err != nil {
-				return err
-			}
+		inspect, err := c.ContainerInspect(ctx, matchedContainers[0].ID)
+		if err != nil {
+			return err
+		}
+
+		// share-mnt does not need to be in running state/does not have to be restarted if it ran successfully
+		if strings.Contains(name, ShareMntContainerName) {
 			if inspect.State != nil && inspect.State.Status == "exited" && inspect.State.ExitCode == 0 {
 				return nil
 			}
 		}
+		// ignore service-sidekick if it is present (other containers just use the volumes)
+		if strings.Contains(name, services.SidekickContainerName) {
+			return nil
+		}
+
+		// if container is running, no need to start and run log linker
+		if inspect.State != nil && inspect.State.Status == "running" {
+			return nil
+		}
+
 		c.ContainerStart(ctx, matchedContainers[0].ID, types.ContainerStartOptions{})
-		if !strings.Contains(name, "share-mnt") {
+		// Both ShareMntContainerName & services.SidekickContainerName are caught before here, we just never need to run it for those containers
+		if !strings.Contains(name, ShareMntContainerName) && !strings.Contains(name, services.SidekickContainerName) {
 			runLogLinker(ctx, c, name, p)
 		}
 		return nil
 	}
 
-	config, hostConfig, _ := services.GetProcessConfig(p)
+	// Host is used to determine if selinux is enabled in the Docker daemon, but this is not needed for workers as the components sharing files in service-sidekick all run as privileged
+	emptyHost := hosts.Host{}
+	config, hostConfig, _ := services.GetProcessConfig(p, &emptyHost)
 	if config.Labels == nil {
 		config.Labels = map[string]string{}
 	}
@@ -132,7 +147,7 @@ func runProcess(ctx context.Context, name string, p v3.Process, start, forceRest
 		if err := c.ContainerStart(ctx, newContainer.ID, types.ContainerStartOptions{}); err != nil {
 			return err
 		}
-		if !strings.Contains(name, "share-mnt") {
+		if !strings.Contains(name, ShareMntContainerName) {
 			return runLogLinker(ctx, c, name, p)
 		}
 		return nil
@@ -287,7 +302,7 @@ func changed(ctx context.Context, c *client.Client, expectedProcess v3.Process, 
 		left := reflect.ValueOf(actualProcess).Field(i).Interface()
 		right := reflect.ValueOf(expectedProcess).Field(i).Interface()
 		if !reflect.DeepEqual(left, right) {
-			logrus.Infof("For process %s, %s has changed from %v to %v", expectedProcess.Name, f.Name, right, left)
+			logrus.Infof("For process %s, %s has changed from %v to %v", expectedProcess.Name, f.Name, left, right)
 			changed = true
 		}
 	}
@@ -312,10 +327,6 @@ func natPortSetToSlice(args map[nat.Port]struct{}) []nat.Port {
 }
 
 func runLogLinker(ctx context.Context, c *client.Client, containerName string, p v3.Process) error {
-	if ignoreWindows() {
-		return nil
-	}
-
 	inspect, err := c.ContainerInspect(ctx, containerName)
 	if err != nil {
 		return err
@@ -326,33 +337,105 @@ func runLogLinker(ctx context.Context, c *client.Client, containerName string, p
 	logLinkerName := fmt.Sprintf("%s-%s", services.LogLinkContainerName, containerName)
 	config := &container.Config{
 		Image: p.Image,
-		Tty:   true,
 		Entrypoint: []string{
 			"sh",
 			"-c",
 			fmt.Sprintf("mkdir -p %s ; ln -s %s %s", hosts.RKELogsPath, containerLogPath, containerLogLink),
 		},
 	}
+	if runtime.GOOS == "windows" { // compatible with Windows
+		config = &container.Config{
+			Image: p.Image,
+			Entrypoint: []string{
+				"pwsh", "-NoLogo", "-NonInteractive", "-Command",
+				fmt.Sprintf(`& {$d="%s"; $t="%s"; $p="%s"; if (-not (Test-Path -PathType Container -Path $d)) {New-Item -ItemType Directory -Path $d -ErrorAction Ignore | Out-Null;} if (-not (Test-Path -PathType Leaf -Path $p)) {New-Item -ItemType SymbolicLink -Target $t -Path $p | Out-Null;}}`,
+					filepath.Join("c:/", hosts.RKELogsPath),
+					containerLogPath,
+					filepath.Join("c:/", containerLogLink),
+				),
+			},
+		}
+	}
 	hostConfig := &container.HostConfig{
 		Binds: []string{
 			"/var/lib:/var/lib",
 		},
-		Privileged: true,
+		Privileged:  true,
+		NetworkMode: "none",
+	}
+	if runtime.GOOS == "windows" { // compatible with Windows
+		hostConfig = &container.HostConfig{
+			Binds: []string{
+				// symbolic link source: docker container logs location
+				"c:/ProgramData:c:/ProgramData",
+				// symbolic link target
+				"c:/var/lib:c:/var/lib",
+			},
+			NetworkMode: "none",
+		}
 	}
 	// remove log linker if its already exists
 	remove(ctx, c, logLinkerName)
 
+	/*
+		the following logic is as same as `docker run --rm`
+	*/
 	newContainer, err := c.ContainerCreate(ctx, config, hostConfig, nil, logLinkerName)
 	if err != nil {
 		return err
 	}
+	statusC := waitContainerExit(ctx, c, newContainer.ID)
 	if err := c.ContainerStart(ctx, newContainer.ID, types.ContainerStartOptions{}); err != nil {
 		return err
 	}
-	// remove log linker after start
+	status := <-statusC
+	if err := status.error(); err != nil {
+		return err
+	}
 	return remove(ctx, c, logLinkerName)
 }
 
-func ignoreWindows() bool {
-	return runtime.GOOS == "windows"
+func waitContainerExit(rootCtx context.Context, dockerCli *client.Client, containerID string) <-chan containerWaitingStatus {
+	resultC, errC := dockerCli.ContainerWait(rootCtx, containerID, container.WaitConditionNextExit)
+
+	statusC := make(chan containerWaitingStatus)
+	go func(ctx context.Context) {
+		select {
+		case result := <-resultC:
+			if result.Error != nil {
+				statusC <- containerWaitingStatus{
+					code:  125,
+					cause: fmt.Errorf(result.Error.Message),
+				}
+			} else {
+				statusC <- containerWaitingStatus{
+					code: int(result.StatusCode),
+				}
+			}
+		case err := <-errC:
+			statusC <- containerWaitingStatus{
+				code:  125,
+				cause: err,
+			}
+		}
+	}(rootCtx)
+
+	return statusC
+}
+
+type containerWaitingStatus struct {
+	code  int
+	cause error
+}
+
+func (s containerWaitingStatus) error() error {
+	if s.code != 0 {
+		if s.cause != nil {
+			return s.cause
+		}
+
+		return fmt.Errorf("exit code %d", s.code)
+	}
+
+	return nil
 }

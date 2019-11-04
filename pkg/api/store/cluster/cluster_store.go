@@ -8,18 +8,26 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/blang/semver"
 	"github.com/rancher/norman/api/access"
 	"github.com/rancher/norman/httperror"
+	"github.com/rancher/norman/parse/builder"
 	"github.com/rancher/norman/store/transform"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
+	"github.com/rancher/norman/types/definition"
 	"github.com/rancher/norman/types/values"
 	ccluster "github.com/rancher/rancher/pkg/api/customization/cluster"
+	"github.com/rancher/rancher/pkg/api/customization/clustertemplate"
 	"github.com/rancher/rancher/pkg/clustermanager"
 	"github.com/rancher/rancher/pkg/controllers/management/clusterprovisioner"
 	"github.com/rancher/rancher/pkg/controllers/management/clusterstatus"
+	"github.com/rancher/rancher/pkg/controllers/management/etcdbackup"
+	"github.com/rancher/rancher/pkg/namespace"
+	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/settings"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
+	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
 	managementv3 "github.com/rancher/types/client/management/v3"
 	"github.com/rancher/types/config"
 	"github.com/sirupsen/logrus"
@@ -29,13 +37,16 @@ import (
 const (
 	DefaultBackupIntervalHours = 12
 	DefaultBackupRetention     = 6
+	s3TransportTimeout         = 10
 )
 
 type Store struct {
 	types.Store
-	ShellHandler          types.RequestHandler
-	mu                    sync.Mutex
-	KontainerDriverLister v3.KontainerDriverLister
+	ShellHandler                  types.RequestHandler
+	mu                            sync.Mutex
+	KontainerDriverLister         v3.KontainerDriverLister
+	ClusterTemplateLister         v3.ClusterTemplateLister
+	ClusterTemplateRevisionLister v3.ClusterTemplateRevisionLister
 }
 
 type transformer struct {
@@ -83,10 +94,12 @@ func (t *transformer) transposeGenericConfigToDynamicField(data map[string]inter
 	return data, nil
 }
 
-func SetClusterStore(schema *types.Schema, mgmt *config.ScaledContext, clusterManager *clustermanager.Manager, k8sProxy http.Handler) {
+func GetClusterStore(schema *types.Schema, mgmt *config.ScaledContext, clusterManager *clustermanager.Manager, k8sProxy http.Handler) *Store {
+
 	transformer := transformer{
 		KontainerDriverLister: mgmt.Management.KontainerDrivers("").Controller().Lister(),
 	}
+
 	t := &transform.Store{
 		Store:       schema.Store,
 		Transformer: transformer.TransformerFunc,
@@ -98,12 +111,14 @@ func SetClusterStore(schema *types.Schema, mgmt *config.ScaledContext, clusterMa
 	}
 
 	s := &Store{
-		Store:                 t,
-		KontainerDriverLister: mgmt.Management.KontainerDrivers("").Controller().Lister(),
-		ShellHandler:          linkHandler.LinkHandler,
+		Store:                         t,
+		KontainerDriverLister:         mgmt.Management.KontainerDrivers("").Controller().Lister(),
+		ShellHandler:                  linkHandler.LinkHandler,
+		ClusterTemplateLister:         mgmt.Management.ClusterTemplates("").Controller().Lister(),
+		ClusterTemplateRevisionLister: mgmt.Management.ClusterTemplateRevisions("").Controller().Lister(),
 	}
-
 	schema.Store = s
+	return s
 }
 
 func transformSetNilSnapshotFalse(data map[string]interface{}) map[string]interface{} {
@@ -156,11 +171,27 @@ func (r *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 		return nil, err
 	}
 
-	setKubernetesVersion(data)
+	//check if template is passed. if yes, load template data
+	if hasTemplate(data) {
+		clusterTemplateRevision, clusterTemplate, err := r.validateTemplateInput(data, false)
+		if err != nil {
+			return nil, err
+		}
+		clusterConfigSchema := apiContext.Schemas.Schema(&managementschema.Version, managementv3.ClusterSpecBaseType)
+		data, err = loadDataFromTemplate(clusterTemplateRevision, clusterTemplate, data, clusterConfigSchema, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	err := setKubernetesVersion(data)
+	if err != nil {
+		return nil, err
+	}
 	// enable local backups for rke clusters by default
 	enableLocalBackup(data)
 
-	data, err := r.transposeDynamicFieldToGenericConfig(data)
+	data, err = r.transposeDynamicFieldToGenericConfig(data)
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +212,142 @@ func (r *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 	if err = setInitialConditions(data); err != nil {
 		return nil, err
 	}
-
+	if err := validateS3Credentials(data); err != nil {
+		return nil, err
+	}
 	return r.Store.Create(apiContext, schema, data)
+}
+
+func transposeNameFields(data map[string]interface{}, clusterConfigSchema *types.Schema) map[string]interface{} {
+
+	if clusterConfigSchema != nil {
+		for fieldName, field := range clusterConfigSchema.ResourceFields {
+
+			if definition.IsReferenceType(field.Type) && strings.HasSuffix(fieldName, "Id") {
+				dataKeyName := strings.TrimSuffix(fieldName, "Id") + "Name"
+				data[fieldName] = data[dataKeyName]
+				delete(data, dataKeyName)
+			}
+		}
+	}
+	return data
+}
+
+func loadDataFromTemplate(clusterTemplateRevision *v3.ClusterTemplateRevision, clusterTemplate *v3.ClusterTemplate, data map[string]interface{}, clusterConfigSchema *types.Schema, existingCluster map[string]interface{}) (map[string]interface{}, error) {
+	dataFromTemplate, err := convert.EncodeToMap(clusterTemplateRevision.Spec.ClusterConfig)
+	if err != nil {
+		return nil, err
+	}
+	dataFromTemplate["name"] = convert.ToString(data["name"])
+	dataFromTemplate["description"] = convert.ToString(data[managementv3.ClusterSpecFieldDisplayName])
+	dataFromTemplate[managementv3.ClusterSpecFieldClusterTemplateID] = ref.Ref(clusterTemplate)
+	dataFromTemplate[managementv3.ClusterSpecFieldClusterTemplateRevisionID] = convert.ToString(data[managementv3.ClusterSpecFieldClusterTemplateRevisionID])
+
+	dataFromTemplate = transposeNameFields(dataFromTemplate, clusterConfigSchema)
+	var revisionQuestions []map[string]interface{}
+	//Add in any answers to the clusterTemplateRevision's Questions[]
+	allAnswers := convert.ToMapInterface(convert.ToMapInterface(data[managementv3.ClusterSpecFieldClusterTemplateAnswers])["values"])
+	existingAnswers := convert.ToMapInterface(convert.ToMapInterface(existingCluster[managementv3.ClusterSpecFieldClusterTemplateAnswers])["values"])
+
+	defaultedAnswers := make(map[string]string)
+
+	for _, question := range clusterTemplateRevision.Spec.Questions {
+		answer, ok := allAnswers[question.Variable]
+		if !ok {
+			if question.Required && question.Default == "" {
+				return nil, httperror.WrapAPIError(err, httperror.MissingRequired, fmt.Sprintf("Missing answer for a required clusterTemplate question: %v", question.Variable))
+			}
+			answer = question.Default
+			defaultedAnswers[question.Variable] = question.Default
+		}
+		if existingCluster != nil && strings.EqualFold(question.Variable, "rancherKubernetesEngineConfig.kubernetesVersion") {
+			if convert.ToString(answer) == convert.ToString(existingAnswers[question.Variable]) {
+				answer = values.GetValueN(existingCluster, "rancherKubernetesEngineConfig", "kubernetesVersion")
+			}
+		}
+		val, err := builder.ConvertSimple(question.Type, answer, builder.Create)
+		if err != nil {
+			return nil, httperror.WrapAPIError(err, httperror.ServerError, "Error processing clusterTemplate answers")
+		}
+		keyParts := strings.Split(question.Variable, ".")
+		values.PutValue(dataFromTemplate, val, keyParts...)
+
+		questionMap, err := convert.EncodeToMap(question)
+		if err != nil {
+			return nil, httperror.WrapAPIError(err, httperror.ServerError, "Error reading clusterTemplate questions")
+		}
+		revisionQuestions = append(revisionQuestions, questionMap)
+	}
+	//save defaultAnswers to answer
+	if allAnswers == nil {
+		allAnswers = make(map[string]interface{})
+	}
+	for key, val := range defaultedAnswers {
+		allAnswers[key] = val
+	}
+
+	finalAnswerMap := make(map[string]interface{})
+	finalAnswerMap["values"] = allAnswers
+	dataFromTemplate[managementv3.ClusterSpecFieldClusterTemplateAnswers] = finalAnswerMap
+	dataFromTemplate[managementv3.ClusterSpecFieldClusterTemplateQuestions] = revisionQuestions
+
+	//validate that the data loaded is valid clusterSpec
+	var spec v3.ClusterSpec
+	if err := convert.ToObj(dataFromTemplate, &spec); err != nil {
+		return nil, httperror.WrapAPIError(err, httperror.InvalidBodyContent, "Invalid clusterTemplate, cannot convert to cluster spec")
+	}
+
+	return dataFromTemplate, nil
+}
+
+func hasTemplate(data map[string]interface{}) bool {
+	templateRevID := convert.ToString(data[managementv3.ClusterSpecFieldClusterTemplateRevisionID])
+	if templateRevID != "" {
+		return true
+	}
+	return false
+}
+
+func (r *Store) validateTemplateInput(data map[string]interface{}, isUpdate bool) (*v3.ClusterTemplateRevision, *v3.ClusterTemplate, error) {
+
+	if !isUpdate {
+		//if data also has rkeconfig, error out on create
+		rkeConfig, ok := values.GetValue(data, "rancherKubernetesEngineConfig")
+		if ok && rkeConfig != nil {
+			return nil, nil, fmt.Errorf("cannot set rancherKubernetesEngineConfig and clusterTemplateRevision both")
+		}
+	}
+
+	var templateID, templateRevID string
+
+	templateRevIDStr := convert.ToString(data[managementv3.ClusterSpecFieldClusterTemplateRevisionID])
+	splitID := strings.Split(templateRevIDStr, ":")
+	if len(splitID) == 2 {
+		templateRevID = splitID[1]
+	}
+
+	clusterTemplateRevision, err := r.ClusterTemplateRevisionLister.Get(namespace.GlobalNamespace, templateRevID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if clusterTemplateRevision.Spec.Enabled != nil && !(*clusterTemplateRevision.Spec.Enabled) {
+		return nil, nil, fmt.Errorf("cannot create cluster, clusterTemplateRevision is disabled")
+	}
+
+	templateIDStr := clusterTemplateRevision.Spec.ClusterTemplateName
+	splitID = strings.Split(templateIDStr, ":")
+	if len(splitID) == 2 {
+		templateID = splitID[1]
+	}
+
+	clusterTemplate, err := r.ClusterTemplateLister.Get(namespace.GlobalNamespace, templateID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return clusterTemplateRevision, clusterTemplate, nil
+
 }
 
 func setInitialConditions(data map[string]interface{}) error {
@@ -254,7 +419,39 @@ func (r *Store) Update(apiContext *types.APIContext, schema *types.Schema, data 
 		}
 	}
 
-	setKubernetesVersion(data)
+	//check if template is passed. if yes, load template data
+	if hasTemplate(data) {
+		if existingCluster[managementv3.ClusterSpecFieldClusterTemplateRevisionID] == "" {
+			return nil, httperror.NewAPIError(httperror.InvalidOption, fmt.Sprintf("this cluster is not created using a clusterTemplate, cannot update it to use a clusterTemplate now"))
+		}
+
+		clusterTemplateRevision, clusterTemplate, err := r.validateTemplateInput(data, true)
+		if err != nil {
+			return nil, err
+		}
+
+		updatedTemplateID := clusterTemplateRevision.Spec.ClusterTemplateName
+		templateID := convert.ToString(existingCluster[managementv3.ClusterSpecFieldClusterTemplateID])
+
+		if !strings.EqualFold(updatedTemplateID, templateID) {
+			return nil, httperror.NewAPIError(httperror.InvalidOption, fmt.Sprintf("cannot update cluster, cluster cannot be changed to a new clusterTemplate"))
+		}
+
+		clusterConfigSchema := apiContext.Schemas.Schema(&managementschema.Version, managementv3.ClusterSpecBaseType)
+		clusterUpdate, err := loadDataFromTemplate(clusterTemplateRevision, clusterTemplate, data, clusterConfigSchema, existingCluster)
+		if err != nil {
+			return nil, err
+		}
+
+		data = clusterUpdate
+	} else if existingCluster[managementv3.ClusterSpecFieldClusterTemplateRevisionID] != nil {
+		return nil, httperror.NewFieldAPIError(httperror.MissingRequired, "ClusterTemplateRevision", "this cluster is created from a clusterTemplateRevision, please pass the clusterTemplateRevision")
+	}
+
+	err = setKubernetesVersion(data)
+	if err != nil {
+		return nil, err
+	}
 
 	data, err = r.transposeDynamicFieldToGenericConfig(data)
 	if err != nil {
@@ -268,6 +465,9 @@ func (r *Store) Update(apiContext *types.APIContext, schema *types.Schema, data 
 	setBackupConfigSecretKeyIfNotExists(existingCluster, data)
 	setPrivateRegistryPasswordIfNotExists(existingCluster, data)
 	setCloudProviderPasswordFieldsIfNotExists(existingCluster, data)
+	if err := validateUpdatedS3Credentials(existingCluster, data); err != nil {
+		return nil, err
+	}
 
 	return r.Store.Update(apiContext, schema, data, id)
 }
@@ -333,17 +533,55 @@ func canUseClusterName(apiContext *types.APIContext, requestedName string) error
 	return nil
 }
 
-func setKubernetesVersion(data map[string]interface{}) {
+func setKubernetesVersion(data map[string]interface{}) error {
 	rkeConfig, ok := values.GetValue(data, "rancherKubernetesEngineConfig")
-
 	if ok && rkeConfig != nil {
 		k8sVersion := values.GetValueN(data, "rancherKubernetesEngineConfig", "kubernetesVersion")
 		if k8sVersion == nil || k8sVersion == "" {
 			//set k8s version to system default on the spec
 			defaultVersion := settings.KubernetesVersion.Get()
 			values.PutValue(data, defaultVersion, "rancherKubernetesEngineConfig", "kubernetesVersion")
+		} else {
+			//if k8s version is already of rancher version form, noop
+			//if k8s version is of form 1.14.x, figure out the latest
+			k8sVersionRequested := convert.ToString(k8sVersion)
+			if !strings.Contains(k8sVersionRequested, "-rancher") {
+				translatedVersion, err := getSupportedK8sVersion(k8sVersionRequested)
+				if err != nil {
+					return err
+				}
+				if translatedVersion == "" {
+					return httperror.NewAPIError(httperror.ServerError, fmt.Sprintf("Requested kubernetesVersion %v is not supported currently", k8sVersionRequested))
+				}
+				values.PutValue(data, translatedVersion, "rancherKubernetesEngineConfig", "kubernetesVersion")
+			}
 		}
 	}
+	return nil
+}
+
+func getSupportedK8sVersion(k8sVersionRequest string) (string, error) {
+	_, err := clustertemplate.CheckKubernetesVersionFormat(k8sVersionRequest)
+	if err != nil {
+		return "", err
+	}
+
+	supportedVersions := strings.Split(settings.KubernetesVersionsCurrent.Get(), ",")
+	range1, err := semver.ParseRange("=" + k8sVersionRequest)
+	if err != nil {
+		return "", httperror.NewAPIError(httperror.ServerError, fmt.Sprintf("Requested kubernetesVersion %v is not of valid semver [major.minor.patch] format", k8sVersionRequest))
+	}
+
+	for _, v := range supportedVersions {
+		semv, err := semver.ParseTolerant(strings.Split(v, "-rancher")[0])
+		if err != nil {
+			return "", httperror.NewAPIError(httperror.ServerError, fmt.Sprintf("Semver translation failed for the current K8bernetes Version %v, err: %v", v, err))
+		}
+		if range1(semv) {
+			return v, nil
+		}
+	}
+	return "", nil
 }
 
 func validateNetworkFlag(data map[string]interface{}, create bool) error {
@@ -406,6 +644,56 @@ func setBackupConfigSecretKeyIfNotExists(oldData, newData map[string]interface{}
 	if oldSecretKey != "" {
 		values.PutValue(newData, oldSecretKey, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig", "secretKey")
 	}
+}
+
+func validateUpdatedS3Credentials(oldData, newData map[string]interface{}) error {
+	newConfig := convert.ToMapInterface(values.GetValueN(newData, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig"))
+	if newConfig == nil {
+		return nil
+	}
+
+	oldConfig := convert.ToMapInterface(values.GetValueN(oldData, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig"))
+	if oldConfig == nil {
+		return validateS3Credentials(newData)
+	}
+	// remove "type" since it's added to the object by API, and it's not present in newConfig yet.
+	delete(oldConfig, "type")
+	if !reflect.DeepEqual(newConfig, oldConfig) {
+		return validateS3Credentials(newData)
+	}
+	return nil
+}
+
+func validateS3Credentials(data map[string]interface{}) error {
+	s3BackupConfig := values.GetValueN(data, "rancherKubernetesEngineConfig", "services", "etcd", "backupConfig", "s3BackupConfig")
+	if s3BackupConfig == nil {
+		return nil
+	}
+	configMap := convert.ToMapInterface(s3BackupConfig)
+	sbc := &v3.S3BackupConfig{
+		AccessKey: convert.ToString(configMap["accessKey"]),
+		SecretKey: convert.ToString(configMap["secretKey"]),
+		Endpoint:  convert.ToString(configMap["endpoint"]),
+		Region:    convert.ToString(configMap["region"]),
+		CustomCA:  convert.ToString(configMap["customCa"]),
+	}
+
+	bucket := convert.ToString(configMap["bucketName"])
+	if bucket == "" {
+		return fmt.Errorf("Empty bucket name")
+	}
+	s3Client, err := etcdbackup.GetS3Client(sbc, s3TransportTimeout)
+	if err != nil {
+		return err
+	}
+	exists, err := s3Client.BucketExists(bucket)
+	if err != nil {
+		return fmt.Errorf("Unable to validate S3 backup target configration: %v", err)
+	}
+	if !exists {
+		return fmt.Errorf("Unable to validate S3 backup target configration: bucket [%v] not found", bucket)
+	}
+	return nil
 }
 
 func setPrivateRegistryPasswordIfNotExists(oldData, newData map[string]interface{}) {

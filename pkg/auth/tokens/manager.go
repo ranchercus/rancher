@@ -32,6 +32,7 @@ import (
 const (
 	userPrincipalIndex = "authn.management.cattle.io/user-principal-index"
 	UserIDLabel        = "authn.management.cattle.io/token-userId"
+	TokenKindLabel     = "authn.management.cattle.io/kind"
 	tokenKeyIndex      = "authn.management.cattle.io/token-key-index"
 	secretNameEnding   = "-secret"
 	secretNamespace    = "cattle-system"
@@ -123,16 +124,14 @@ func (m *Manager) createToken(k8sToken *v3.Token) (v3.Token, error) {
 		return v3.Token{}, fmt.Errorf("failed to generate token key")
 	}
 
-	labels := make(map[string]string)
-	labels[UserIDLabel] = k8sToken.UserID
-
+	if k8sToken.ObjectMeta.Labels == nil {
+		k8sToken.ObjectMeta.Labels = make(map[string]string)
+	}
 	k8sToken.APIVersion = "management.cattle.io/v3"
 	k8sToken.Kind = "Token"
 	k8sToken.Token = key
-	k8sToken.ObjectMeta = metav1.ObjectMeta{
-		GenerateName: "token-",
-		Labels:       labels,
-	}
+	k8sToken.ObjectMeta.Labels[UserIDLabel] = k8sToken.UserID
+	k8sToken.ObjectMeta.GenerateName = "token-"
 	createdToken, err := m.tokensClient.Create(k8sToken)
 
 	if err != nil {
@@ -633,8 +632,7 @@ var uaBackoff = wait.Backoff{
 
 func (m *Manager) NewLoginToken(userID string, userPrincipal v3.Principal, groupPrincipals []v3.Principal, providerToken string, ttl int64, description string) (v3.Token, error) {
 	provider := userPrincipal.Provider
-
-	if (provider == "github" || provider == "azuread") && providerToken != "" {
+	if (provider == "github" || provider == "azuread" || provider == "googleoauth") && providerToken != "" {
 		err := m.CreateSecret(userID, provider, providerToken)
 		if err != nil {
 			return v3.Token{}, fmt.Errorf("unable to create secret: %s", err)
@@ -660,8 +658,12 @@ func (m *Manager) NewLoginToken(userID string, userPrincipal v3.Principal, group
 		UserID:        userID,
 		AuthProvider:  provider,
 		Description:   description,
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				TokenKindLabel: "session",
+			},
+		},
 	}
-
 	return m.createToken(token)
 }
 

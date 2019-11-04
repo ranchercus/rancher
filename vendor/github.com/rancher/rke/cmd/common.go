@@ -13,7 +13,7 @@ import (
 	"github.com/rancher/rke/log"
 	"github.com/rancher/rke/pki"
 	"github.com/rancher/rke/util"
-	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
+	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
@@ -74,6 +74,7 @@ func ClusterInit(ctx context.Context, rkeConfig *v3.RancherKubernetesEngineConfi
 	if len(flags.CertificateDir) == 0 {
 		flags.CertificateDir = cluster.GetCertificateDirPath(flags.ClusterFilePath, flags.ConfigDir)
 	}
+
 	rkeFullState, _ := cluster.ReadStateFile(ctx, stateFilePath)
 
 	kubeCluster, err := cluster.InitClusterObject(ctx, rkeConfig, flags)
@@ -90,7 +91,7 @@ func ClusterInit(ctx context.Context, rkeConfig *v3.RancherKubernetesEngineConfi
 		if strings.Contains(err.Error(), "aborting upgrade") {
 			return err
 		}
-		log.Warnf(ctx, "[state] can't fetch legacy cluster state from Kubernetes")
+		log.Warnf(ctx, "[state] can't fetch legacy cluster state from Kubernetes: %v", err)
 	}
 	// check if certificate rotate or normal init
 	if kubeCluster.RancherKubernetesEngineConfig.RotateCertificates != nil {
@@ -200,7 +201,7 @@ func fetchAndUpdateStateFromLegacyCluster(ctx context.Context, kubeCluster *clus
 		// try to fetch certs from nodes
 		recoveredCerts, err = cluster.GetClusterCertsFromNodes(ctx, kubeCluster)
 		if err != nil {
-			return err
+			return fmt.Errorf("Failed to fetch cluster certs from nodes, aborting upgrade: %v", err)
 		}
 	}
 	fullState.CurrentState.RancherKubernetesEngineConfig = kubeCluster.RancherKubernetesEngineConfig.DeepCopy()

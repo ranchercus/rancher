@@ -20,10 +20,10 @@ import (
 	"github.com/rancher/rancher/pkg/pipeline/remote"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
-	"github.com/rancher/types/apis/apps/v1beta2"
-	"github.com/rancher/types/apis/core/v1"
+	appsv1 "github.com/rancher/types/apis/apps/v1"
+	v1 "github.com/rancher/types/apis/core/v1"
+	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
-	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/config/dialer"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
@@ -43,7 +43,7 @@ type Engine struct {
 	HTTPClient       *http.Client
 	ServiceLister    v1.ServiceLister
 	PodLister        v1.PodLister
-	DeploymentLister v1beta2.DeploymentLister
+	DeploymentLister appsv1.DeploymentLister
 
 	Secrets                    v1.SecretInterface
 	SecretLister               v1.SecretLister
@@ -450,7 +450,7 @@ func (j *Engine) SyncExecution(execution *v3.PipelineExecution) (bool, error) {
 				if err := j.successStep(execution, stage, step, jenkinsStage); err != nil {
 					return false, err
 				}
-			} else if status == "FAILED" && execution.Status.Stages[stage].Steps[step].State != utils.StateFailed {
+			} else if (status == "FAILED" || status == "ABORTED") && execution.Status.Stages[stage].Steps[step].State != utils.StateFailed {
 				updated = true
 				if err := j.failStep(execution, stage, step, jenkinsStage); err != nil {
 					return false, err

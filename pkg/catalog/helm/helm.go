@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rancher/norman/controller"
+	catUtil "github.com/rancher/rancher/pkg/catalog/utils"
 	nsutil "github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/settings"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
@@ -36,10 +37,11 @@ var (
 	httpClient  = &http.Client{
 		Timeout: httpTimeout,
 	}
-	uuid         = settings.InstallUUID.Get()
-	Locker       = locker.New()
-	CatalogCache = filepath.Join("management-state", "catalog-cache")
-	IconCache    = filepath.Join(CatalogCache, ".icon-cache")
+	uuid            = settings.InstallUUID.Get()
+	Locker          = locker.New()
+	CatalogCache    = filepath.Join("management-state", "catalog-cache")
+	IconCache       = filepath.Join(CatalogCache, ".icon-cache")
+	InternalCatalog = filepath.Join("management-state", "local-catalogs")
 )
 
 type Helm struct {
@@ -74,16 +76,31 @@ func (h *Helm) lockAndVerifyCachePath() error {
 	return nil
 }
 
-func (h *Helm) request(pathURL, method string) (*http.Response, error) {
+func (h *Helm) request(pathURL string) (*http.Response, error) {
 	baseEndpoint, err := url.Parse(pathURL)
 	if err != nil {
+		return nil, err
+	}
+	if !baseEndpoint.IsAbs() {
+		helmURLstring := h.url
+		if !strings.HasSuffix(helmURLstring, "/") {
+			helmURLstring = helmURLstring + "/"
+		}
+		helmURL, err := url.Parse(helmURLstring)
+		if err != nil {
+			return nil, err
+		}
+		baseEndpoint = helmURL.ResolveReference(baseEndpoint)
+	}
+
+	if err := catUtil.ValidateURL(baseEndpoint.String()); err != nil {
 		return nil, err
 	}
 
 	if len(h.username) > 0 && len(h.password) > 0 {
 		baseEndpoint.User = url.UserPassword(h.username, h.password)
 	}
-	req, err := http.NewRequest(method, baseEndpoint.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, baseEndpoint.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +110,7 @@ func (h *Helm) request(pathURL, method string) (*http.Response, error) {
 func (h *Helm) downloadIndex(indexURL string) (*RepoIndex, error) {
 	indexURL = strings.TrimSuffix(indexURL, "/")
 	indexURL = indexURL + "/index.yaml"
-	resp, err := h.request(indexURL, "GET")
+	resp, err := h.request(indexURL)
 	if err != nil {
 		if e, ok := err.(net.Error); ok && e.Timeout() {
 			return nil, errors.Errorf("Timeout in HTTP GET to [%s], did not respond in %s", indexURL, httpTimeout)
@@ -124,7 +141,8 @@ func (h *Helm) downloadIndex(indexURL string) (*RepoIndex, error) {
 	}
 	err = yaml.Unmarshal(body, helmRepoIndex.IndexFile)
 	if err != nil {
-		return nil, errors.Errorf("error unmarshalling response from [%s]", indexURL)
+		logrus.Debugf("Error while parsing response from [%s], error: %s. Response: %s", indexURL, err, body)
+		return nil, errors.Errorf("Error while parsing response from [%s], error: %s", indexURL, err)
 	}
 	return helmRepoIndex, nil
 }
@@ -166,13 +184,19 @@ func (h *Helm) LoadIndex() (*RepoIndex, error) {
 	return helmRepoIndex, yaml.Unmarshal(body, helmRepoIndex.IndexFile)
 }
 
-func (h *Helm) fetchTgz(url string) ([]v3.File, error) {
+func (h *Helm) fetchTgz(helmURL string) ([]v3.File, error) {
 	var files []v3.File
+	logrus.Debugf("Helm fetching file %s", helmURL)
 
-	logrus.Debugf("Helm fetching file %s", url)
-	resp, err := h.request(url, "GET")
-	if err != nil {
-		return nil, errors.Errorf("Error in HTTP GET of [%s], error: %s", url, err)
+	resp, err := h.request(helmURL)
+	if err != nil || resp.StatusCode > 400 {
+		if e, ok := err.(net.Error); ok && e.Timeout() {
+			return nil, errors.Errorf("Timeout in HTTP GET to [%s], did not respond in %s", helmURL, httpTimeout)
+		}
+		if err == nil {
+			return nil, errors.Errorf("Error in HTTP GET of [%s], received: %s", helmURL, resp.Status)
+		}
+		return nil, errors.Errorf("Error in HTTP GET of [%s], error: %s", helmURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -290,11 +314,12 @@ func (h *Helm) LoadChart(templateVersion *v3.TemplateVersionSpec, filters []stri
 
 func (h *Helm) fetchAndCacheURLs(versionPath, versionName string, versionURLs, filters []string) (map[string]string, error) {
 	filemap := map[string]string{}
-	if err := os.MkdirAll(versionPath, 0755); err != nil {
-		return nil, err
-	}
 	files, err := h.fetchURLs(versionURLs)
 	if err != nil {
+		return nil, err
+	}
+	// existence of this file indicates the cache exists
+	if err := os.MkdirAll(versionPath, 0755); err != nil {
 		return nil, err
 	}
 	for _, file := range files {

@@ -8,19 +8,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rancher/norman/httperror"
-
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/api/access"
+	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/parse"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
 	gaccess "github.com/rancher/rancher/pkg/api/customization/globalnamespaceaccess"
+	catUtil "github.com/rancher/rancher/pkg/catalog/utils"
 	"github.com/rancher/rancher/pkg/namespace"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
 	client "github.com/rancher/types/client/management/v3"
-
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,6 +75,10 @@ func (w Wrapper) ActionHandler(actionName string, action *types.Action, apiConte
 		}
 		if obj.Status.RevisionName == revision.Name {
 			return nil
+		}
+		err = w.validateRancherVersion(revision.TemplateVersionName)
+		if err != nil {
+			return err
 		}
 		toUpdate := obj.DeepCopy()
 		toUpdate.Spec.TemplateVersionName = revision.TemplateVersionName
@@ -270,4 +273,18 @@ func (w Wrapper) modifyProjects(request *types.APIContext, actionName string) ([
 		}
 	}
 	return inputProjects, inputAnswers, nil
+}
+
+func (w Wrapper) validateRancherVersion(tempVersion string) error {
+	parts := strings.Split(tempVersion, ":")
+	if len(parts) != 2 {
+		return httperror.NewAPIError(httperror.InvalidBodyContent, "invalid templateVersionId")
+	}
+
+	template, err := w.TemplateVersionLister.Get(namespace.GlobalNamespace, parts[1])
+	if err != nil {
+		return err
+	}
+
+	return catUtil.ValidateRancherVersion(template)
 }

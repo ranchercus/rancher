@@ -20,7 +20,6 @@ import (
 	pv3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	client "github.com/rancher/types/client/management/v3"
 	"github.com/sirupsen/logrus"
-
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +41,7 @@ type Wrapper struct {
 	ProjectLister                 v3.ProjectLister
 	ClusterLister                 v3.ClusterLister
 	Apps                          pv3.AppInterface
+	TemplateVersionLister         v3.CatalogTemplateVersionLister
 }
 
 const (

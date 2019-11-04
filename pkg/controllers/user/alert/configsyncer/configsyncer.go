@@ -259,9 +259,7 @@ func (d *ConfigSyncer) addProjectAlert2Operator(clusterDisplayName string, proje
 		}
 		sort.Strings(groupIDs)
 
-		var enabled bool
 		for _, groupID := range groupIDs {
-			enabled = true
 			alertRules := groupRules[groupID]
 			ruleGroup := d.operatorCRDManager.GetRuleGroup(groupID)
 			for _, alertRule := range alertRules {
@@ -271,15 +269,16 @@ func (d *ConfigSyncer) addProjectAlert2Operator(clusterDisplayName string, proje
 					d.operatorCRDManager.AddRule(ruleGroup, promRule)
 				}
 			}
-			d.operatorCRDManager.AddRuleGroup(promRule, *ruleGroup)
+
+			if len(ruleGroup.Rules) > 0 {
+				d.operatorCRDManager.AddRuleGroup(promRule, *ruleGroup)
+			}
 		}
 
-		if !enabled {
-			continue
-		}
-
-		if err := d.operatorCRDManager.SyncPrometheusRule(promRule); err != nil {
-			return err
+		if len(promRule.Spec.Groups) > 0 {
+			if err := d.operatorCRDManager.SyncPrometheusRule(promRule); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -287,12 +286,10 @@ func (d *ConfigSyncer) addProjectAlert2Operator(clusterDisplayName string, proje
 }
 
 func (d *ConfigSyncer) addClusterAlert2Operator(clusterDisplayName string, groupRules map[string][]*v3.ClusterAlertRule, keys []string) error {
-	var enabled bool
 	_, namespace := monitorutil.ClusterMonitoringInfo()
 	promRule := d.operatorCRDManager.GetDefaultPrometheusRule(namespace, d.clusterName)
 
 	for _, groupID := range keys {
-		enabled = true
 		ruleGroup := d.operatorCRDManager.GetRuleGroup(groupID)
 		alertRules := groupRules[groupID]
 		for _, alertRule := range alertRules {
@@ -302,14 +299,16 @@ func (d *ConfigSyncer) addClusterAlert2Operator(clusterDisplayName string, group
 				d.operatorCRDManager.AddRule(ruleGroup, promRule)
 			}
 		}
-		d.operatorCRDManager.AddRuleGroup(promRule, *ruleGroup)
+		if len(ruleGroup.Rules) > 0 {
+			d.operatorCRDManager.AddRuleGroup(promRule, *ruleGroup)
+		}
 	}
 
-	if !enabled {
-		return nil
+	if len(promRule.Spec.Groups) > 0 {
+		return d.operatorCRDManager.SyncPrometheusRule(promRule)
 	}
 
-	return d.operatorCRDManager.SyncPrometheusRule(promRule)
+	return nil
 }
 
 func (d *ConfigSyncer) addProjectAlert2Config(config *alertconfig.Config, projectGroups map[string]map[string][]*v3.ProjectAlertRule, keys []string, alertGroups map[string]*v3.ProjectAlertGroup, notifiers []*v3.Notifier) error {
@@ -456,11 +455,25 @@ func (d *ConfigSyncer) addRecipients(notifiers []*v3.Notifier, receiver *alertco
 				logrus.Debugf("Can not find the notifier %s", r.NotifierName)
 				continue
 			}
-
+			commonNotifierConfig := alertconfig.NotifierConfig{
+				VSendResolved: notifier.Spec.SendResolved,
+			}
 			if notifier.Spec.PagerdutyConfig != nil {
 				pagerduty := &alertconfig.PagerdutyConfig{
-					ServiceKey:  alertconfig.Secret(notifier.Spec.PagerdutyConfig.ServiceKey),
-					Description: `{{ template "rancher.title" . }}`,
+					NotifierConfig: commonNotifierConfig,
+					ServiceKey:     alertconfig.Secret(notifier.Spec.PagerdutyConfig.ServiceKey),
+					Description:    `{{ template "rancher.title" . }}`,
+				}
+
+				if notifier.Spec.PagerdutyConfig.HTTPClientConfig != nil {
+					url, err := toAlertManagerURL(notifier.Spec.PagerdutyConfig.HTTPClientConfig.ProxyURL)
+					if err != nil {
+						logrus.Errorf("Failed to parse pagerduty proxy url %s, %v", notifier.Spec.PagerdutyConfig.HTTPClientConfig.ProxyURL, err)
+						continue
+					}
+					pagerduty.HTTPConfig = &alertconfig.HTTPClientConfig{
+						ProxyURL: *url,
+					}
 				}
 
 				if notifier.Spec.PagerdutyConfig.HTTPClientConfig != nil {
@@ -481,10 +494,11 @@ func (d *ConfigSyncer) addRecipients(notifiers []*v3.Notifier, receiver *alertco
 
 			} else if notifier.Spec.WechatConfig != nil {
 				wechat := &alertconfig.WechatConfig{
-					APISecret: alertconfig.Secret(notifier.Spec.WechatConfig.Secret),
-					AgentID:   notifier.Spec.WechatConfig.Agent,
-					CorpID:    notifier.Spec.WechatConfig.Corp,
-					Message:   `{{ template "wechat.text" . }}`,
+					NotifierConfig: commonNotifierConfig,
+					APISecret:      alertconfig.Secret(notifier.Spec.WechatConfig.Secret),
+					AgentID:        notifier.Spec.WechatConfig.Agent,
+					CorpID:         notifier.Spec.WechatConfig.Corp,
+					Message:        `{{ template "wechat.text" . }}`,
 				}
 
 				recipient := notifier.Spec.WechatConfig.DefaultRecipient
@@ -517,7 +531,8 @@ func (d *ConfigSyncer) addRecipients(notifiers []*v3.Notifier, receiver *alertco
 
 			} else if notifier.Spec.WebhookConfig != nil {
 				webhook := &alertconfig.WebhookConfig{
-					URL: notifier.Spec.WebhookConfig.URL,
+					NotifierConfig: commonNotifierConfig,
+					URL:            notifier.Spec.WebhookConfig.URL,
 				}
 				if r.Recipient != "" {
 					webhook.URL = r.Recipient
@@ -538,12 +553,13 @@ func (d *ConfigSyncer) addRecipients(notifiers []*v3.Notifier, receiver *alertco
 				receiverExist = true
 			} else if notifier.Spec.SlackConfig != nil {
 				slack := &alertconfig.SlackConfig{
-					APIURL:    alertconfig.Secret(notifier.Spec.SlackConfig.URL),
-					Channel:   notifier.Spec.SlackConfig.DefaultRecipient,
-					Text:      `{{ template "slack.text" . }}`,
-					Title:     `{{ template "rancher.title" . }}`,
-					TitleLink: "",
-					Color:     `{{ if eq (index .Alerts 0).Labels.severity "critical" }}danger{{ else if eq (index .Alerts 0).Labels.severity "warning" }}warning{{ else }}good{{ end }}`,
+					NotifierConfig: commonNotifierConfig,
+					APIURL:         alertconfig.Secret(notifier.Spec.SlackConfig.URL),
+					Channel:        notifier.Spec.SlackConfig.DefaultRecipient,
+					Text:           `{{ template "slack.text" . }}`,
+					Title:          `{{ template "rancher.title" . }}`,
+					TitleLink:      "",
+					Color:          `{{ if eq (index .Alerts 0).Labels.severity "critical" }}danger{{ else if eq (index .Alerts 0).Labels.severity "warning" }}warning{{ else }}good{{ end }}`,
 				}
 				if r.Recipient != "" {
 					slack.Channel = r.Recipient
@@ -566,14 +582,15 @@ func (d *ConfigSyncer) addRecipients(notifiers []*v3.Notifier, receiver *alertco
 				header := map[string]string{}
 				header["Subject"] = `{{ template "rancher.title" . }}`
 				email := &alertconfig.EmailConfig{
-					Smarthost:    notifier.Spec.SMTPConfig.Host + ":" + strconv.Itoa(notifier.Spec.SMTPConfig.Port),
-					AuthPassword: alertconfig.Secret(notifier.Spec.SMTPConfig.Password),
-					AuthUsername: notifier.Spec.SMTPConfig.Username,
-					RequireTLS:   &notifier.Spec.SMTPConfig.TLS,
-					To:           notifier.Spec.SMTPConfig.DefaultRecipient,
-					Headers:      header,
-					From:         notifier.Spec.SMTPConfig.Sender,
-					HTML:         `{{ template "email.text" . }}`,
+					NotifierConfig: commonNotifierConfig,
+					Smarthost:      notifier.Spec.SMTPConfig.Host + ":" + strconv.Itoa(notifier.Spec.SMTPConfig.Port),
+					AuthPassword:   alertconfig.Secret(notifier.Spec.SMTPConfig.Password),
+					AuthUsername:   notifier.Spec.SMTPConfig.Username,
+					RequireTLS:     &notifier.Spec.SMTPConfig.TLS,
+					To:             notifier.Spec.SMTPConfig.DefaultRecipient,
+					Headers:        header,
+					From:           notifier.Spec.SMTPConfig.Sender,
+					HTML:           `{{ template "email.text" . }}`,
 				}
 				if r.Recipient != "" {
 					email.To = r.Recipient

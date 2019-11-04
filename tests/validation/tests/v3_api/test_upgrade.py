@@ -21,11 +21,8 @@ validate_ingress = \
 
 sshUser = os.environ.get('RANCHER_SSH_USER', "ubuntu")
 rancherVersion = os.environ.get('RANCHER_SERVER_VERSION', "master")
-rancherImage = os.environ.get('RANCHER_SERVER_IMAGE', "rancher/rancher")
 upgradeVersion = os.environ.get('RANCHER_SERVER_VERSION_UPGRADE', "master")
-upgradeImage = os.environ.get('RANCHER_SERVER_IMAGE_UPGRADE',
-                              "rancher/rancher")
-upgradeEnv = os.environ.get('RANCHER_SERVER_ENV_UPGRADE', "")
+upgradeImage = os.environ.get('RANCHER_UPGRADE_IMAGE', "rancher/rancher")
 
 value = base64.b64encode(b"valueall")
 keyvaluepair = {"testall": value.decode('utf-8')}
@@ -77,6 +74,22 @@ pre_upgrade_externalId = \
 # the post_upgrade_externalId is for upgrading the existing app
 post_upgrade_externalId = \
     "catalog://?catalog=library&template=mysql&version=0.3.8"
+
+# Answers for mysql app
+app_answers = {
+    "defaultImage": "true",
+    "image": "mysql",
+    "imageTag": "5.7.14",
+    "mysqlDatabase": "admin",
+    "mysqlPassword": "",
+    "mysqlUser": "admin",
+    "persistence.enabled": "false",
+    "persistence.size": "8Gi",
+    "persistence.storageClass": "",
+    "service.nodePort": "",
+    "service.port": "3306",
+    "service.type": "ClusterIP"
+}
 
 if_post_upgrade = pytest.mark.skipif(
     upgrade_check_stage != "postupgrade",
@@ -585,8 +598,9 @@ def upgrade_rancher_server(serverIp,
           sshUser, sshKeyPath))
 
     createVolumeCommand = "docker create --volumes-from " + containerName + \
-                          " --name rancher-data " + rancherImage + ":" + \
+                          " --name rancher-data rancher/rancher:" + \
                           rancherVersion
+
     print(exec_shell_command(serverIp, 22, createVolumeCommand, "",
           sshUser, sshKeyPath))
 
@@ -596,11 +610,7 @@ def upgrade_rancher_server(serverIp,
 
     runCommand = "docker run -d --volumes-from rancher-data " \
                  "--restart=unless-stopped " \
-                 "-p 80:80 -p 443:443 "
-    if len(upgradeEnv) > 0:
-        runCommand += " -e " + upgradeEnv + " "
-    runCommand += upgradeImage + ":" + upgradeVersion
-
+                 "-p 80:80 -p 443:443 " + upgradeImage + ":" + upgradeVersion
     print(exec_shell_command(serverIp, 22, runCommand, "",
           sshUser, sshKeyPath))
 
@@ -613,20 +623,7 @@ def create_and_validate_catalog_app():
     ns = create_ns(get_cluster_client_for_token(cluster, ADMIN_TOKEN),
                    cluster, namespace["project"], ns_name=app_ns)
     app = p_client.create_app(
-        answers={
-            "defaultImage": "true",
-            "image": "mysql",
-            "imageTag": "5.7.14",
-            "mysqlDatabase": "admin",
-            "mysqlPassword": "",
-            "mysqlUser": "admin",
-            "persistence.enabled": "false",
-            "persistence.size": "8Gi",
-            "persistence.storageClass": "",
-            "service.nodePort": "",
-            "service.port": "3306",
-            "service.type": "ClusterIP"
-        },
+        answers=app_answers,
         externalId=pre_upgrade_externalId,
         name=app_create_name,
         projectId=namespace["project"].id,
@@ -641,6 +638,7 @@ def modify_catalog_app():
     app = wait_for_app_to_active(p_client, app_validate_name)
     # upgrade the catalog app to a newer version
     p_client.action(obj=app, action_name="upgrade",
+                    answers=app_answers,
                     externalId=post_upgrade_externalId)
     validate_catalog_app(app.name, post_upgrade_externalId)
 

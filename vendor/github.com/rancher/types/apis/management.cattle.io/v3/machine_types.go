@@ -1,6 +1,8 @@
 package v3
 
 import (
+	"time"
+
 	"github.com/rancher/norman/condition"
 	"github.com/rancher/norman/types"
 	v1 "k8s.io/api/core/v1"
@@ -40,10 +42,11 @@ type NodeTemplateCondition struct {
 }
 
 type NodeTemplateSpec struct {
-	DisplayName         string `json:"displayName"`
-	Description         string `json:"description"`
-	Driver              string `json:"driver" norman:"nocreate,noupdate"`
-	CloudCredentialName string `json:"cloudCredentialName" norman:"type=reference[cloudCredential]"`
+	DisplayName         string     `json:"displayName"`
+	Description         string     `json:"description"`
+	Driver              string     `json:"driver" norman:"nocreate,noupdate"`
+	CloudCredentialName string     `json:"cloudCredentialName" norman:"type=reference[cloudCredential]"`
+	NodeTaints          []v1.Taint `json:"nodeTaints,omitempty"`
 	NodeCommonParams    `json:",inline"`
 }
 
@@ -60,16 +63,6 @@ type Node struct {
 	// Most recent observed status of the cluster. More info:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#spec-and-status
 	Status NodeStatus `json:"status"`
-}
-
-type MetadataUpdate struct {
-	Labels      MapDelta `json:"labels,omitempty"`
-	Annotations MapDelta `json:"annotations,omitempty"`
-}
-
-type MapDelta struct {
-	Add    map[string]string `json:"add,omitempty"`
-	Delete map[string]bool   `json:"delete,omitempty"`
 }
 
 type NodeStatus struct {
@@ -159,9 +152,12 @@ type NodePoolSpec struct {
 	Quantity        int               `json:"quantity" norman:"required,default=1"`
 	NodeLabels      map[string]string `json:"nodeLabels"`
 	NodeAnnotations map[string]string `json:"nodeAnnotations"`
+	NodeTaints      []v1.Taint        `json:"nodeTaints,omitempty"`
 
 	DisplayName string `json:"displayName"`
 	ClusterName string `json:"clusterName,omitempty" norman:"type=reference[cluster],noupdate,required"`
+
+	DeleteNotReadyAfterSecs time.Duration `json:"deleteNotReadyAfterSecs" norman:"default=0,max=31540000,min=0"`
 }
 
 type NodePoolStatus struct {
@@ -182,6 +178,7 @@ type CustomConfig struct {
 	// SSH Certificate
 	SSHCert string            `yaml:"ssh_cert" json:"sshCert,omitempty"`
 	Label   map[string]string `yaml:"label" json:"label,omitempty"`
+	Taints  []string          `yaml:"taints" json:"taints,omitempty"`
 }
 
 type NodeSpec struct {
@@ -192,16 +189,21 @@ type NodeSpec struct {
 	Worker           bool   `json:"worker" norman:"noupdate"`
 	NodeTemplateName string `json:"nodeTemplateName,omitempty" norman:"type=reference[nodeTemplate],noupdate"`
 
-	NodePoolName             string          `json:"nodePoolName" norman:"type=reference[nodePool],nocreate,noupdate"`
-	CustomConfig             *CustomConfig   `json:"customConfig"`
-	Imported                 bool            `json:"imported"`
-	Description              string          `json:"description,omitempty"`
-	DisplayName              string          `json:"displayName"`
-	RequestedHostname        string          `json:"requestedHostname,omitempty" norman:"type=hostname,nullable,noupdate,required"`
-	InternalNodeSpec         v1.NodeSpec     `json:"internalNodeSpec"`
-	DesiredNodeUnschedulable string          `json:"desiredNodeUnschedulable,omitempty"`
-	NodeDrainInput           *NodeDrainInput `json:"nodeDrainInput,omitempty"`
-	MetadataUpdate           MetadataUpdate  `json:"metadataUpdate,omitempty"`
+	NodePoolName             string            `json:"nodePoolName" norman:"type=reference[nodePool],nocreate,noupdate"`
+	CustomConfig             *CustomConfig     `json:"customConfig"`
+	Imported                 bool              `json:"imported"`
+	Description              string            `json:"description,omitempty"`
+	DisplayName              string            `json:"displayName"`
+	RequestedHostname        string            `json:"requestedHostname,omitempty" norman:"type=hostname,nullable,noupdate,required"`
+	InternalNodeSpec         v1.NodeSpec       `json:"internalNodeSpec"`
+	DesiredNodeTaints        []v1.Taint        `json:"desiredNodeTaints"`
+	DesiredNodeLabels        map[string]string `json:"desiredNodeLabels,omitempty"`
+	DesiredNodeAnnotations   map[string]string `json:"desiredNodeAnnotations,omitempty"`
+	UpdateTaintsFromAPI      *bool             `json:"updateTaintsFromAPI,omitempty"`
+	CurrentNodeLabels        map[string]string `json:"currentNodeLabels,omitempty"`
+	CurrentNodeAnnotations   map[string]string `json:"currentNodeAnnotations,omitempty"`
+	DesiredNodeUnschedulable string            `json:"desiredNodeUnschedulable,omitempty"`
+	NodeDrainInput           *NodeDrainInput   `json:"nodeDrainInput,omitempty"`
 }
 
 type NodeCommonParams struct {

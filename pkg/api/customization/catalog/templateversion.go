@@ -18,7 +18,7 @@ import (
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
 	client "github.com/rancher/types/client/management/v3"
 	"github.com/sirupsen/logrus"
-	yaml "gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v2"
 )
 
 type TemplateVerionFormatterWrapper struct {
@@ -84,7 +84,11 @@ func (t TemplateVerionFormatterWrapper) TemplateVersionFormatter(apiContext *typ
 		VersionURLs: versionURLs,
 	}, nil)
 	if err != nil {
-		logrus.Errorf("Failed to load chart: %s", err)
+		logrus.Errorf("failed to load chart: %s", err)
+		return
+	}
+	if len(files) == 0 {
+		logrus.Errorf("no files were found for this chart")
 		return
 	}
 
@@ -106,27 +110,6 @@ func (t TemplateVerionFormatterWrapper) TemplateVersionFormatter(apiContext *typ
 		files[name] = base64.StdEncoding.EncodeToString([]byte(content))
 	}
 	resource.Values["files"] = files
-}
-
-func extractVersionLinks(apiContext *types.APIContext, resource *types.RawResource) map[string]string {
-	schema := apiContext.Schemas.Schema(&managementschema.Version, client.TemplateVersionType)
-	r := map[string]string{}
-	versionMap, ok := resource.Values["versions"].([]interface{})
-	if ok {
-		for _, version := range versionMap {
-			revision := ""
-			if v, ok := version.(map[string]interface{})["revision"].(int64); ok {
-				revision = strconv.FormatInt(v, 10)
-			}
-			version := version.(map[string]interface{})["version"].(string)
-			versionID := fmt.Sprintf("%v-%v", resource.ID, version)
-			if revision != "" {
-				versionID = fmt.Sprintf("%v-%v", resource.ID, revision)
-			}
-			r[version] = apiContext.URLBuilder.ResourceLinkByID(schema, versionID)
-		}
-	}
-	return r
 }
 
 func (t TemplateVerionFormatterWrapper) TemplateVersionReadmeHandler(apiContext *types.APIContext, next types.RequestHandler) error {
@@ -153,6 +136,9 @@ func (t TemplateVerionFormatterWrapper) TemplateVersionReadmeHandler(apiContext 
 
 func (t TemplateVerionFormatterWrapper) loadChart(templateVersion *client.CatalogTemplateVersion, filter []string) (map[string]string, error) {
 	namespace, catalogName, catalogType, _, _, err := common.SplitExternalID(templateVersion.ExternalID)
+	if err != nil {
+		return nil, err
+	}
 	catalog, err := helmlib.GetCatalog(catalogType, namespace, catalogName, t.CatalogLister, t.ClusterCatalogLister, t.ProjectCatalogLister)
 	if err != nil {
 		return nil, err

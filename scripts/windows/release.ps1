@@ -1,31 +1,5 @@
-#Requires -Version 5.0
+$ErrorActionPreference = 'Stop'
 
-param (
-    [parameter(Mandatory = $false)] [string]$PushImageToLibrary = "maiwj"
-)
+Import-Module -WarningAction Ignore -Name "$PSScriptRoot\utils.psm1"
 
-$ErrorActionPreference = "Stop"
-
-& "$PSScriptRoot\version.ps1" | Out-Null
-
-$baseTag = "rancher-agent:$($env:VERSION)"
-$currentTag = "rancher/$baseTag"
-$pushTag = "$PushImageToLibrary/$baseTag"
-
-$currentReleaseId = (docker images $currentTag --format "{{.ID}}")
-$pushedReleaseId = (docker images $pushTag --format "{{.ID}}")
-if ($currentReleaseId -ne $pushedReleaseId) {
-    docker tag $pushTag "$pushTag-bak" | Out-Null
-    docker tag $currentTag $pushTag | Out-Null
-}
-
-docker push $pushTag
-if ($?) {
-    docker rmi "$pushTag-bak" | Out-Null
-    docker rmi $currentTag | Out-Null
-    Write-Host "$pushTag was PUSHED"
-} else {
-    docker tag "$pushTag-bak" $pushTag | Out-Null
-    docker rmi "$pushTag-bak" | Out-Null
-    Write-Host -ForegroundColor Red "$pushTag has something wrong while PUSHING"
-}
+Invoke-Script -File "$PSScriptRoot\ci.ps1"

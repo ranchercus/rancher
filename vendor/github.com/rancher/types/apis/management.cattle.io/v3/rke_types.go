@@ -1,5 +1,11 @@
 package v3
 
+import (
+	"github.com/rancher/norman/types"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
 type RancherKubernetesEngineConfig struct {
 	// Kubernetes nodes
 	Nodes []RKEConfigNode `yaml:"nodes" json:"nodes,omitempty"`
@@ -118,13 +124,17 @@ type RKESystemImages struct {
 	CalicoControllers string `yaml:"calico_controllers" json:"calicoControllers,omitempty"`
 	// Calicoctl image
 	CalicoCtl string `yaml:"calico_ctl" json:"calicoCtl,omitempty"`
+	//CalicoFlexVol image
+	CalicoFlexVol string `yaml:"calico_flexvol" json:"calicoFlexVol,omitempty"`
 	// Canal Node Image
 	CanalNode string `yaml:"canal_node" json:"canalNode,omitempty"`
 	// Canal CNI image
 	CanalCNI string `yaml:"canal_cni" json:"canalCni,omitempty"`
 	//CanalFlannel image
 	CanalFlannel string `yaml:"canal_flannel" json:"canalFlannel,omitempty"`
-	// Weave Node image
+	//CanalFlexVol image
+	CanalFlexVol string `yaml:"canal_flexvol" json:"canalFlexVol,omitempty"`
+	//Weave Node image
 	WeaveNode string `yaml:"weave_node" json:"weaveNode,omitempty"`
 	// Weave CNI image
 	WeaveCNI string `yaml:"weave_cni" json:"weaveCni,omitempty"`
@@ -136,6 +146,8 @@ type RKESystemImages struct {
 	IngressBackend string `yaml:"ingress_backend" json:"ingressBackend,omitempty"`
 	// Metrics Server image
 	MetricsServer string `yaml:"metrics_server" json:"metricsServer,omitempty"`
+	// Pod infra container image for Windows
+	WindowsPodInfraContainer string `yaml:"windows_pod_infra_container" json:"podInfraWindowsContainer,omitempty"`
 }
 
 type RKEConfigNode struct {
@@ -167,6 +179,42 @@ type RKEConfigNode struct {
 	SSHCertPath string `yaml:"ssh_cert_path" json:"sshCertPath,omitempty"`
 	// Node Labels
 	Labels map[string]string `yaml:"labels" json:"labels,omitempty"`
+	// Node Taints
+	Taints []RKETaint `yaml:"taints" json:"taints,omitempty"`
+}
+
+type RKEK8sSystemImage struct {
+	types.Namespaced
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	SystemImages RKESystemImages `yaml:"system_images" json:"systemImages,omitempty"`
+}
+
+type RKEK8sServiceOption struct {
+	types.Namespaced
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	ServiceOptions KubernetesServicesOptions `yaml:"service_options" json:"serviceOptions,omitempty"`
+}
+
+type RKEAddon struct {
+	types.Namespaced
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Template string `yaml:"template" json:"template,omitempty"`
+}
+
+type K8sVersionInfo struct {
+	MinRKEVersion       string `yaml:"min_rke_version" json:"minRKEVersion,omitempty"`
+	MaxRKEVersion       string `yaml:"max_rke_version" json:"maxRKEVersion,omitempty"`
+	DeprecateRKEVersion string `yaml:"deprecate_rke_version" json:"deprecateRKEVersion,omitempty"`
+
+	MinRancherVersion       string `yaml:"min_rancher_version" json:"minRancherVersion,omitempty"`
+	MaxRancherVersion       string `yaml:"max_rancher_version" json:"maxRancherVersion,omitempty"`
+	DeprecateRancherVersion string `yaml:"deprecate_rancher_version" json:"deprecateRancherVersion,omitempty"`
 }
 
 type RKEConfigServices struct {
@@ -197,6 +245,11 @@ type ETCDService struct {
 	Key string `yaml:"key" json:"key,omitempty"`
 	// External etcd prefix
 	Path string `yaml:"path" json:"path,omitempty"`
+	// UID to run etcd container as
+	UID int `yaml:"uid" json:"uid,omitempty"`
+	// GID to run etcd container as
+	GID int `yaml:"gid" json:"gid,omitempty"`
+
 	// Etcd Recurring snapshot Service, used by rke only
 	Snapshot *bool `yaml:"snapshot" json:"snapshot,omitempty" norman:"default=false"`
 	// Etcd snapshot Retention period
@@ -276,6 +329,8 @@ type NetworkConfig struct {
 	FlannelNetworkProvider *FlannelNetworkProvider `yaml:"flannel_network_provider,omitempty" json:"flannelNetworkProvider,omitempty"`
 	// WeaveNetworkProvider
 	WeaveNetworkProvider *WeaveNetworkProvider `yaml:"weave_network_provider,omitempty" json:"weaveNetworkProvider,omitempty"`
+	// NodeSelector key pair
+	NodeSelector map[string]string `yaml:"node_selector" json:"nodeSelector,omitempty"`
 }
 
 type AuthWebhookConfig struct {
@@ -310,6 +365,8 @@ type IngressConfig struct {
 	NodeSelector map[string]string `yaml:"node_selector" json:"nodeSelector,omitempty"`
 	// Ingress controller extra arguments
 	ExtraArgs map[string]string `yaml:"extra_args" json:"extraArgs,omitempty"`
+	// DNS Policy
+	DNSPolicy string `yaml:"dns_policy" json:"dnsPolicy,omitempty"`
 }
 
 type RKEPlan struct {
@@ -330,6 +387,8 @@ type RKEConfigNodePlan struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 	// Node Labels
 	Labels map[string]string `json:"labels,omitempty"`
+	// Node Taints
+	Taints []RKETaint `json:"taints,omitempty"`
 }
 
 type Process struct {
@@ -363,6 +422,8 @@ type Process struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Process docker publish container's port to host
 	Publish []string `json:"publish,omitempty"`
+	// docker will run the container with this user
+	User string `json:"user,omitempty"`
 }
 
 type HealthCheck struct {
@@ -563,12 +624,16 @@ type AzureCloudProvider struct {
 	// In other words, if you use multiple agent pools (scale sets), you MUST set this field.
 	PrimaryScaleSetName string `json:"primaryScaleSetName" yaml:"primaryScaleSetName"`
 	// The ClientID for an AAD application with RBAC access to talk to Azure RM APIs
+	// This's used for service principal authentication: https://github.com/Azure/aks-engine/blob/master/docs/topics/service-principals.md
 	AADClientID string `json:"aadClientId" yaml:"aadClientId"`
 	// The ClientSecret for an AAD application with RBAC access to talk to Azure RM APIs
+	// This's used for service principal authentication: https://github.com/Azure/aks-engine/blob/master/docs/topics/service-principals.md
 	AADClientSecret string `json:"aadClientSecret" yaml:"aadClientSecret" norman:"type=password"`
 	// The path of a client certificate for an AAD application with RBAC access to talk to Azure RM APIs
+	// This's used for client certificate authentication: https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-protocols-oauth-service-to-service
 	AADClientCertPath string `json:"aadClientCertPath" yaml:"aadClientCertPath"`
 	// The password of the client certificate for an AAD application with RBAC access to talk to Azure RM APIs
+	// This's used for client certificate authentication: https://docs.microsoft.com/en-us/azure/active-directory/develop/active-directory-protocols-oauth-service-to-service
 	AADClientCertPassword string `json:"aadClientCertPassword" yaml:"aadClientCertPassword" norman:"type=password"`
 	// Enable exponential backoff to manage resource request retries
 	CloudProviderBackoff bool `json:"cloudProviderBackoff" yaml:"cloudProviderBackoff"`
@@ -589,9 +654,19 @@ type AzureCloudProvider struct {
 	// Use instance metadata service where possible
 	UseInstanceMetadata bool `json:"useInstanceMetadata" yaml:"useInstanceMetadata"`
 	// Use managed service identity for the virtual machine to access Azure ARM APIs
+	// This's used for managed identity authentication: https://docs.microsoft.com/en-us/azure/active-directory/managed-service-identity/overview
+	// For user-assigned managed identity, need to set the below UserAssignedIdentityID
 	UseManagedIdentityExtension bool `json:"useManagedIdentityExtension" yaml:"useManagedIdentityExtension"`
-	// Maximum allowed LoadBalancer Rule Count is the limit enforced by Azure Load balancer
+	// The Client ID of the user assigned MSI which is assigned to the underlying VMs
+	// This's used for managed identity authentication: https://docs.microsoft.com/en-us/azure/active-directory/managed-service-identity/overview
+	UserAssignedIdentityID string `json:"userAssignedIdentityID,omitempty" yaml:"userAssignedIdentityID,omitempty"`
+	// Maximum allowed LoadBalancer Rule Count is the limit enforced by Azure Load balancer, default(0) to 148
 	MaximumLoadBalancerRuleCount int `json:"maximumLoadBalancerRuleCount" yaml:"maximumLoadBalancerRuleCount"`
+	// Sku of Load Balancer and Public IP: `basic` or `standard`, default(blank) to `basic`
+	LoadBalancerSku string `json:"loadBalancerSku,omitempty" yaml:"loadBalancerSku,omitempty"`
+	// Excludes master nodes (labeled with `node-role.kubernetes.io/master`) from the backend pool of Azure standard loadbalancer, default(nil) to `true`
+	// If want adding the master nodes to ALB, this should be set to `false` and remove the `node-role.kubernetes.io/master` label from master nodes
+	ExcludeMasterFromStandardLB *bool `json:"excludeMasterFromStandardLB,omitempty" yaml:"excludeMasterFromStandardLB,omitempty"`
 }
 
 // AWSCloudProvider options
@@ -662,6 +737,8 @@ type MonitoringConfig struct {
 	Provider string `yaml:"provider" json:"provider,omitempty" norman:"default=metrics-server"`
 	// Metrics server options
 	Options map[string]string `yaml:"options" json:"options,omitempty"`
+	// NodeSelector key pair
+	NodeSelector map[string]string `yaml:"node_selector" json:"nodeSelector,omitempty"`
 }
 
 type RestoreConfig struct {
@@ -682,6 +759,15 @@ type DNSConfig struct {
 	UpstreamNameservers []string `yaml:"upstreamnameservers" json:"upstreamnameservers,omitempty"`
 	// ReverseCIDRs
 	ReverseCIDRs []string `yaml:"reversecidrs" json:"reversecidrs,omitempty"`
+	// Stubdomains
+	StubDomains map[string][]string `yaml:"stubdomains" json:"stubdomains,omitempty"`
 	// NodeSelector key pair
 	NodeSelector map[string]string `yaml:"node_selector" json:"nodeSelector,omitempty"`
+}
+
+type RKETaint struct {
+	Key       string         `json:"key,omitempty" yaml:"key"`
+	Value     string         `json:"value,omitempty" yaml:"value"`
+	Effect    v1.TaintEffect `json:"effect,omitempty" yaml:"effect"`
+	TimeAdded *metav1.Time   `json:"timeAdded,omitempty" yaml:"timeAdded,omitempty"`
 }

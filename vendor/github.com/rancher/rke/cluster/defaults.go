@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rancher/rke/metadata"
+
 	"github.com/rancher/rke/cloudprovider"
 	"github.com/rancher/rke/docker"
 	"github.com/rancher/rke/k8s"
@@ -24,8 +26,6 @@ const (
 	DefaultClusterDomain         = "cluster.local"
 	DefaultClusterName           = "local"
 	DefaultClusterSSHKeyPath     = "~/.ssh/id_rsa"
-
-	DefaultK8sVersion = v3.DefaultK8s
 
 	DefaultSSHPort        = "22"
 	DefaultDockerSockPath = "/var/run/docker.sock"
@@ -54,6 +54,10 @@ const (
 	DefaultEtcdHeartbeatIntervalValue = "500"
 	DefaultEtcdElectionTimeoutName    = "election-timeout"
 	DefaultEtcdElectionTimeoutValue   = "5000"
+
+	DefaultFlannelBackendVxLan     = "vxlan"
+	DefaultFlannelBackendVxLanPort = "8472"
+	DefaultFlannelBackendVxLanVNI  = "1"
 )
 
 type ExternalFlags struct {
@@ -66,7 +70,6 @@ type ExternalFlags struct {
 	GenerateCSR      bool
 	Local            bool
 	UpdateOnly       bool
-	Legacy           bool
 }
 
 func setDefaultIfEmptyMapValue(configMap map[string]string, key string, value string) {
@@ -134,7 +137,7 @@ func (c *Cluster) setClusterDefaults(ctx context.Context, flags ExternalFlags) e
 		c.ClusterName = DefaultClusterName
 	}
 	if len(c.Version) == 0 {
-		c.Version = DefaultK8sVersion
+		c.Version = metadata.DefaultK8sVersion
 	}
 	if c.AddonJobTimeout == 0 {
 		c.AddonJobTimeout = k8s.DefaultTimeout
@@ -226,7 +229,7 @@ func (c *Cluster) setClusterServicesDefaults() {
 func (c *Cluster) setClusterImageDefaults() error {
 	var privRegURL string
 
-	imageDefaults, ok := v3.AllK8sVersions[c.Version]
+	imageDefaults, ok := metadata.K8sVersionToRKESystemImages[c.Version]
 	if !ok {
 		return nil
 	}
@@ -257,14 +260,18 @@ func (c *Cluster) setClusterImageDefaults() error {
 		&c.SystemImages.CalicoCNI:                 d(imageDefaults.CalicoCNI, privRegURL),
 		&c.SystemImages.CalicoCtl:                 d(imageDefaults.CalicoCtl, privRegURL),
 		&c.SystemImages.CalicoControllers:         d(imageDefaults.CalicoControllers, privRegURL),
+		&c.SystemImages.CalicoFlexVol:             d(imageDefaults.CalicoFlexVol, privRegURL),
 		&c.SystemImages.CanalNode:                 d(imageDefaults.CanalNode, privRegURL),
 		&c.SystemImages.CanalCNI:                  d(imageDefaults.CanalCNI, privRegURL),
 		&c.SystemImages.CanalFlannel:              d(imageDefaults.CanalFlannel, privRegURL),
+		&c.SystemImages.CanalFlexVol:              d(imageDefaults.CanalFlexVol, privRegURL),
 		&c.SystemImages.WeaveNode:                 d(imageDefaults.WeaveNode, privRegURL),
 		&c.SystemImages.WeaveCNI:                  d(imageDefaults.WeaveCNI, privRegURL),
 		&c.SystemImages.Ingress:                   d(imageDefaults.Ingress, privRegURL),
 		&c.SystemImages.IngressBackend:            d(imageDefaults.IngressBackend, privRegURL),
 		&c.SystemImages.MetricsServer:             d(imageDefaults.MetricsServer, privRegURL),
+		// this's a stopgap, we could drop this after https://github.com/kubernetes/kubernetes/pull/75618 merged
+		&c.SystemImages.WindowsPodInfraContainer: d(imageDefaults.WindowsPodInfraContainer, privRegURL),
 	}
 
 	for k, v := range systemImagesDefaultsMap {
@@ -316,11 +323,15 @@ func (c *Cluster) setClusterNetworkDefaults() {
 		}
 	case FlannelNetworkPlugin:
 		networkPluginConfigDefaultsMap = map[string]string{
-			FlannelBackendType: "vxlan",
+			FlannelBackendType:                 DefaultFlannelBackendVxLan,
+			FlannelBackendPort:                 DefaultFlannelBackendVxLanPort,
+			FlannelBackendVxLanNetworkIdentify: DefaultFlannelBackendVxLanVNI,
 		}
 	case CanalNetworkPlugin:
 		networkPluginConfigDefaultsMap = map[string]string{
-			CanalFlannelBackendType: "vxlan",
+			CanalFlannelBackendType:                 DefaultFlannelBackendVxLan,
+			CanalFlannelBackendPort:                 DefaultFlannelBackendVxLanPort,
+			CanalFlannelBackendVxLanNetworkIdentify: DefaultFlannelBackendVxLanVNI,
 		}
 	}
 	if c.Network.CalicoNetworkProvider != nil {

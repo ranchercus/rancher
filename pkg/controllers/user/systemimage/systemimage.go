@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 
+	cutils "github.com/rancher/rancher/pkg/catalog/utils"
 	alerting "github.com/rancher/rancher/pkg/controllers/user/alert/deployer"
 	logging "github.com/rancher/rancher/pkg/controllers/user/logging/deployer"
 	pipeline "github.com/rancher/rancher/pkg/controllers/user/pipeline/upgrade"
 	"github.com/rancher/rancher/pkg/project"
-	"github.com/rancher/types/apis/apps/v1beta2"
+	appsv1 "github.com/rancher/types/apis/apps/v1"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/config"
 
@@ -18,14 +19,13 @@ import (
 )
 
 var systemProjectLabels = labels.Set(map[string]string{"authz.management.cattle.io/system-project": "true"})
-var systemLibraryName = "system-library"
 
 type Syncer struct {
 	clusterName      string
-	daemonsets       v1beta2.DaemonSetInterface
-	daemonsetLister  v1beta2.DaemonSetLister
-	deployments      v1beta2.DeploymentInterface
-	deploymentLister v1beta2.DeploymentLister
+	daemonsets       appsv1.DaemonSetInterface
+	daemonsetLister  appsv1.DaemonSetLister
+	deployments      appsv1.DeploymentInterface
+	deploymentLister appsv1.DeploymentLister
 	projectLister    v3.ProjectLister
 	projects         v3.ProjectInterface
 	userContext      *config.UserContext
@@ -44,7 +44,7 @@ func (s *Syncer) SyncCatalog(key string, obj *v3.Catalog) (runtime.Object, error
 		return nil, nil
 	}
 
-	if obj.Name != systemLibraryName {
+	if obj.Name != cutils.SystemLibraryName {
 		return obj, nil
 	}
 

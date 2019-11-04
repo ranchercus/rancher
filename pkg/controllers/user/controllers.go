@@ -10,6 +10,7 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/user/alert"
 	"github.com/rancher/rancher/pkg/controllers/user/approuter"
 	"github.com/rancher/rancher/pkg/controllers/user/certsexpiration"
+	"github.com/rancher/rancher/pkg/controllers/user/cis"
 	"github.com/rancher/rancher/pkg/controllers/user/clusterauthtoken"
 	"github.com/rancher/rancher/pkg/controllers/user/dnsrecord"
 	"github.com/rancher/rancher/pkg/controllers/user/endpoints"
@@ -19,6 +20,7 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/user/helm"
 	"github.com/rancher/rancher/pkg/controllers/user/ingress"
 	"github.com/rancher/rancher/pkg/controllers/user/ingresshostgen"
+	"github.com/rancher/rancher/pkg/controllers/user/istio"
 	"github.com/rancher/rancher/pkg/controllers/user/logging"
 	"github.com/rancher/rancher/pkg/controllers/user/monitoring"
 	"github.com/rancher/rancher/pkg/controllers/user/networkpolicy"
@@ -33,8 +35,8 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/user/servicemonitor"
 	"github.com/rancher/rancher/pkg/controllers/user/systemimage"
 	"github.com/rancher/rancher/pkg/controllers/user/targetworkloadservice"
+	"github.com/rancher/rancher/pkg/controllers/user/windows"
 	"github.com/rancher/rancher/pkg/controllers/user/workload"
-	"github.com/rancher/rancher/pkg/controllers/user/project"
 	pkgmonitoring "github.com/rancher/rancher/pkg/monitoring"
 	managementv3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	projectclient "github.com/rancher/types/client/project/v3"
@@ -48,6 +50,7 @@ func Register(ctx context.Context, cluster *config.UserContext, clusterRec *mana
 	helm.Register(ctx, cluster, kubeConfigGetter)
 	logging.Register(ctx, cluster)
 	networkpolicy.Register(ctx, cluster)
+	cis.Register(ctx, cluster)
 	noderemove.Register(ctx, cluster)
 	nodesyncer.Register(ctx, cluster, kubeConfigGetter)
 	pipeline.Register(ctx, cluster)
@@ -64,8 +67,13 @@ func Register(ctx context.Context, cluster *config.UserContext, clusterRec *mana
 	globaldns.Register(ctx, cluster)
 	alert.Register(ctx, cluster)
 	monitoring.Register(ctx, cluster)
-	project.Register(ctx, cluster)
+	istio.Register(ctx, cluster)
 	certsexpiration.Register(ctx, cluster)
+	ingresshostgen.Register(ctx, cluster.UserOnlyContext())
+	windows.Register(ctx, clusterRec, cluster)
+
+	// register controller for API
+	cluster.APIAggregation.APIServices("").Controller()
 
 	if clusterRec.Spec.LocalClusterAuthEndpoint.Enabled {
 		err := clusterauthtoken.CRDSetup(ctx, cluster.UserOnlyContext())
@@ -91,6 +99,7 @@ func RegisterFollower(ctx context.Context, cluster *config.UserContext, kubeConf
 	cluster.RBAC.ClusterRoleBindings("").Controller()
 	cluster.RBAC.RoleBindings("").Controller()
 	cluster.Core.Endpoints("").Controller()
+	cluster.APIAggregation.APIServices("").Controller()
 	return nil
 }
 
@@ -102,7 +111,6 @@ func RegisterUserOnly(ctx context.Context, cluster *config.UserOnlyContext) erro
 	dnsrecord.Register(ctx, cluster)
 	externalservice.Register(ctx, cluster)
 	ingress.Register(ctx, cluster)
-	ingresshostgen.Register(ctx, cluster)
 	nslabels.Register(ctx, cluster)
 	targetworkloadservice.Register(ctx, cluster)
 	workload.Register(ctx, cluster)

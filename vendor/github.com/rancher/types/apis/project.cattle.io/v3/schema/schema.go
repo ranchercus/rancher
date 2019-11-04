@@ -4,12 +4,15 @@ import (
 	"net/http"
 
 	monitoringv1 "github.com/coreos/prometheus-operator/pkg/client/monitoring/v1"
+	istiov1alpha3 "github.com/knative/pkg/apis/istio/v1alpha3"
 	"github.com/rancher/norman/types"
 	m "github.com/rancher/norman/types/mapper"
 	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/factory"
 	"github.com/rancher/types/mapper"
-	"k8s.io/api/apps/v1beta2"
+	appsv1 "k8s.io/api/apps/v1"
+	k8sappv1 "k8s.io/api/apps/v1"
+	autoscaling "k8s.io/api/autoscaling/v2beta2"
 	batchv1 "k8s.io/api/batch/v1"
 	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	v1 "k8s.io/api/core/v1"
@@ -44,7 +47,9 @@ var (
 		Init(workloadTypes).
 		Init(appTypes).
 		Init(pipelineTypes).
-		Init(monitoringTypes)
+		Init(monitoringTypes).
+		Init(autoscalingTypes).
+		Init(istioTypes)
 )
 
 func configMapTypes(schemas *types.Schemas) *types.Schemas {
@@ -132,7 +137,7 @@ func workloadTypes(schemas *types.Schemas) *types.Schemas {
 
 func statefulSetTypes(schemas *types.Schemas) *types.Schemas {
 	return schemas.
-		AddMapperForType(&Version, v1beta2.StatefulSetUpdateStrategy{},
+		AddMapperForType(&Version, k8sappv1.StatefulSetUpdateStrategy{},
 			&m.Embed{Field: "rollingUpdate"},
 			m.Enum{Field: "type", Options: []string{
 				"RollingUpdate",
@@ -140,7 +145,7 @@ func statefulSetTypes(schemas *types.Schemas) *types.Schemas {
 			}},
 			m.Move{From: "type", To: "strategy"},
 		).
-		AddMapperForType(&Version, v1beta2.StatefulSetSpec{},
+		AddMapperForType(&Version, k8sappv1.StatefulSetSpec{},
 			&m.Move{
 				From: "replicas",
 				To:   "scale",
@@ -167,15 +172,15 @@ func statefulSetTypes(schemas *types.Schemas) *types.Schemas {
 			&m.Embed{Field: "template"},
 		).
 		MustImport(&Version, v3.WorkloadMetric{}).
-		AddMapperForType(&Version, v1beta2.StatefulSet{},
+		AddMapperForType(&Version, k8sappv1.StatefulSet{},
 			&m.Move{
 				From: "status",
 				To:   "statefulSetStatus",
 			},
 			NewWorkloadTypeMapper(),
 		).
-		MustImport(&Version, v1beta2.StatefulSetSpec{}, statefulSetConfigOverride{}).
-		MustImportAndCustomize(&Version, v1beta2.StatefulSet{}, func(schema *types.Schema) {
+		MustImport(&Version, k8sappv1.StatefulSetSpec{}, statefulSetConfigOverride{}).
+		MustImportAndCustomize(&Version, k8sappv1.StatefulSet{}, func(schema *types.Schema) {
 			schema.BaseType = "workload"
 			schema.MustCustomizeField("name", func(field types.Field) types.Field {
 				field.Type = "dnsLabelRestricted"
@@ -191,7 +196,7 @@ func statefulSetTypes(schemas *types.Schemas) *types.Schemas {
 
 func replicaSetTypes(schemas *types.Schemas) *types.Schemas {
 	return schemas.
-		AddMapperForType(&Version, v1beta1.ReplicaSetSpec{},
+		AddMapperForType(&Version, appsv1.ReplicaSetSpec{},
 			&m.Move{
 				From: "replicas",
 				To:   "scale",
@@ -202,7 +207,7 @@ func replicaSetTypes(schemas *types.Schemas) *types.Schemas {
 			},
 		).
 		MustImport(&Version, v3.WorkloadMetric{}).
-		AddMapperForType(&Version, v1beta1.ReplicaSet{},
+		AddMapperForType(&Version, appsv1.ReplicaSet{},
 			&m.Move{
 				From: "status",
 				To:   "replicaSetStatus",
@@ -210,8 +215,8 @@ func replicaSetTypes(schemas *types.Schemas) *types.Schemas {
 			&m.Embed{Field: "template"},
 			NewWorkloadTypeMapper(),
 		).
-		MustImport(&Version, v1beta1.ReplicaSetSpec{}, replicaSetConfigOverride{}).
-		MustImportAndCustomize(&Version, v1beta1.ReplicaSet{}, func(schema *types.Schema) {
+		MustImport(&Version, appsv1.ReplicaSetSpec{}, replicaSetConfigOverride{}).
+		MustImportAndCustomize(&Version, appsv1.ReplicaSet{}, func(schema *types.Schema) {
 			schema.BaseType = "workload"
 			schema.MustCustomizeField("name", func(field types.Field) types.Field {
 				field.Type = "dnsLabelRestricted"
@@ -265,7 +270,7 @@ func replicationControllerTypes(schemas *types.Schemas) *types.Schemas {
 
 func daemonSetTypes(schemas *types.Schemas) *types.Schemas {
 	return schemas.
-		AddMapperForType(&Version, v1beta2.DaemonSetUpdateStrategy{},
+		AddMapperForType(&Version, k8sappv1.DaemonSetUpdateStrategy{},
 			&m.Embed{Field: "rollingUpdate"},
 			m.Enum{Field: "type", Options: []string{
 				"RollingUpdate",
@@ -273,7 +278,7 @@ func daemonSetTypes(schemas *types.Schemas) *types.Schemas {
 			}},
 			m.Move{From: "type", To: "strategy"},
 		).
-		AddMapperForType(&Version, v1beta2.DaemonSetSpec{},
+		AddMapperForType(&Version, k8sappv1.DaemonSetSpec{},
 			&m.Embed{Field: "updateStrategy"},
 			&m.BatchMove{
 				From: []string{
@@ -287,15 +292,15 @@ func daemonSetTypes(schemas *types.Schemas) *types.Schemas {
 			&m.Embed{Field: "template"},
 		).
 		MustImport(&Version, v3.WorkloadMetric{}).
-		AddMapperForType(&Version, v1beta2.DaemonSet{},
+		AddMapperForType(&Version, k8sappv1.DaemonSet{},
 			&m.Move{
 				From: "status",
 				To:   "daemonSetStatus",
 			},
 			NewWorkloadTypeMapper(),
 		).
-		MustImport(&Version, v1beta2.DaemonSetSpec{}, daemonSetOverride{}).
-		MustImportAndCustomize(&Version, v1beta2.DaemonSet{}, func(schema *types.Schema) {
+		MustImport(&Version, k8sappv1.DaemonSetSpec{}, daemonSetOverride{}).
+		MustImportAndCustomize(&Version, k8sappv1.DaemonSet{}, func(schema *types.Schema) {
 			schema.BaseType = "workload"
 			schema.MustCustomizeField("name", func(field types.Field) types.Field {
 				field.Type = "dnsLabelRestricted"
@@ -417,7 +422,7 @@ func cronJobTypes(schemas *types.Schemas) *types.Schemas {
 
 func deploymentTypes(schemas *types.Schemas) *types.Schemas {
 	return schemas.
-		AddMapperForType(&Version, v1beta2.DeploymentStrategy{},
+		AddMapperForType(&Version, k8sappv1.DeploymentStrategy{},
 			&m.Embed{Field: "rollingUpdate", EmptyValueOk: true},
 			m.Enum{Field: "type", Options: []string{
 				"Recreate",
@@ -425,7 +430,7 @@ func deploymentTypes(schemas *types.Schemas) *types.Schemas {
 			}},
 			m.Move{From: "type", To: "strategy"},
 		).
-		AddMapperForType(&Version, v1beta2.DeploymentSpec{},
+		AddMapperForType(&Version, k8sappv1.DeploymentSpec{},
 			&m.Move{
 				From: "strategy",
 				To:   "upgradeStrategy",
@@ -449,16 +454,16 @@ func deploymentTypes(schemas *types.Schemas) *types.Schemas {
 			&m.Embed{Field: "template"},
 		).
 		MustImport(&Version, v3.WorkloadMetric{}).
-		AddMapperForType(&Version, v1beta2.Deployment{},
+		AddMapperForType(&Version, k8sappv1.Deployment{},
 			&m.Move{
 				From: "status",
 				To:   "deploymentStatus",
 			},
 			NewWorkloadTypeMapper(),
 		).
-		MustImport(&Version, v1beta2.DeploymentSpec{}, deploymentConfigOverride{}).
+		MustImport(&Version, k8sappv1.DeploymentSpec{}, deploymentConfigOverride{}).
 		MustImport(&Version, v3.DeploymentRollbackInput{}).
-		MustImportAndCustomize(&Version, v1beta2.Deployment{}, func(schema *types.Schema) {
+		MustImportAndCustomize(&Version, k8sappv1.Deployment{}, func(schema *types.Schema) {
 			schema.BaseType = "workload"
 			schema.ResourceActions = map[string]types.Action{
 				"rollback": {
@@ -483,9 +488,6 @@ func podTypes(schemas *types.Schemas) *types.Schemas {
 	return schemas.
 		AddMapperForType(&Version, v1.PodTemplateSpec{},
 			&m.Embed{Field: "spec"},
-		).
-		AddMapperForType(&Version, v1.HTTPGetAction{},
-			&m.Drop{Field: "host"},
 		).
 		AddMapperForType(&Version, v1.Capabilities{},
 			m.Move{From: "add", To: "capAdd"},
@@ -526,6 +528,9 @@ func podTypes(schemas *types.Schemas) *types.Schemas {
 		AddMapperForType(&Version, v1.PodSpec{},
 			mapper.InitContainerMapper{},
 			mapper.SchedulingMapper{},
+			m.Move{From: "priority", To: "scheduling/priority", DestDefined: true},
+			m.Move{From: "priorityClassName", To: "scheduling/priorityClassName", DestDefined: true},
+			m.Move{From: "schedulerName", To: "scheduling/scheduler", DestDefined: true},
 			m.Move{From: "tolerations", To: "scheduling/tolerate", DestDefined: true},
 			&m.Embed{Field: "securityContext"},
 			&m.Drop{Field: "serviceAccount"},
@@ -696,6 +701,7 @@ func ingressTypes(schemas *types.Schemas) *types.Schemas {
 		}{}).
 		MustImportAndCustomize(&Version, v1beta1.Ingress{}, func(schema *types.Schema) {
 			schema.MustCustomizeField("name", func(f types.Field) types.Field {
+				f.Type = "hostname"
 				f.Required = true
 				f.Nullable = false
 				return f
@@ -1019,4 +1025,86 @@ func monitoringTypes(schemas *types.Schemas) *types.Schemas {
 			&m.Drop{Field: "status"},
 		).
 		MustImport(&Version, monitoringv1.Alertmanager{}, projectOverride{})
+}
+
+func autoscalingTypes(schemas *types.Schemas) *types.Schemas {
+	return schemas.
+		AddMapperForType(&Version, autoscaling.HorizontalPodAutoscaler{},
+			&m.ChangeType{Field: "scaleTargetRef", Type: "reference[workload]"},
+			&m.Move{From: "scaleTargetRef", To: "workloadId"},
+			mapper.CrossVersionObjectToWorkload{Field: "workloadId"},
+			&m.Required{Fields: []string{"workloadId", "maxReplicas"}},
+			&m.AnnotationField{Field: "displayName"},
+			&m.DisplayName{},
+			&m.AnnotationField{Field: "description"},
+			&m.Embed{Field: "status"},
+			mapper.NewMergeListByIndexMapper("currentMetrics", "metrics", "type"),
+		).
+		AddMapperForType(&Version, autoscaling.MetricTarget{},
+			&m.Enum{Field: "type", Options: []string{"Utilization", "Value", "AverageValue"}},
+			&m.Move{To: "utilization", From: "averageUtilization"},
+		).
+		AddMapperForType(&Version, autoscaling.MetricValueStatus{},
+			&m.Move{To: "utilization", From: "averageUtilization"},
+		).
+		AddMapperForType(&Version, autoscaling.MetricSpec{},
+			&m.Condition{Field: "type", Value: "Object", Mapper: types.Mappers{
+				&m.Move{To: "target", From: "object/target", DestDefined: true, NoDeleteFromField: true},
+				&m.Move{To: "metric", From: "object/metric", DestDefined: true, NoDeleteFromField: true},
+			}},
+			&m.Condition{Field: "type", Value: "Pods", Mapper: types.Mappers{
+				&m.Move{To: "target", From: "pods/target", DestDefined: true, NoDeleteFromField: true},
+				&m.Move{To: "metric", From: "pods/metric", DestDefined: true, NoDeleteFromField: true},
+			}},
+			&m.Condition{Field: "type", Value: "Resource", Mapper: types.Mappers{
+				&m.Move{To: "metric/name", From: "resource/name", DestDefined: true, NoDeleteFromField: true},
+				&m.Move{To: "target", From: "resource/target", DestDefined: true, NoDeleteFromField: true},
+			}},
+			&m.Condition{Field: "type", Value: "External", Mapper: types.Mappers{
+				&m.Move{To: "target", From: "external/target", DestDefined: true, NoDeleteFromField: true},
+				&m.Move{To: "metric", From: "external/metric", DestDefined: true, NoDeleteFromField: true},
+			}},
+			&m.Embed{Field: "object", Ignore: []string{"target", "metric"}},
+			&m.Embed{Field: "pods", Ignore: []string{"target", "metric"}},
+			&m.Embed{Field: "external", Ignore: []string{"target", "metric"}},
+			&m.Embed{Field: "resource", Ignore: []string{"target", "name"}},
+			&m.Embed{Field: "metric"},
+			&m.Enum{Field: "type", Options: []string{"Object", "Pods", "Resource", "External"}},
+		).
+		MustImportAndCustomize(&Version, autoscaling.MetricSpec{}, func(s *types.Schema) {
+			s.CodeName = "Metric"
+			s.PluralName = "metrics"
+			s.ID = "metric"
+			s.CodeNamePlural = "Metrics"
+		}, struct {
+			Target  autoscaling.MetricTarget      `json:"target"`
+			Metric  autoscaling.MetricIdentifier  `json:"metric"`
+			Current autoscaling.MetricValueStatus `json:"current" norman:"nocreate,noupdate"`
+		}{}).
+		AddMapperForType(&Version, autoscaling.MetricStatus{},
+			&m.Condition{Field: "type", Value: "Object", Mapper: &m.Move{To: "current", From: "object/current", DestDefined: true, NoDeleteFromField: true}},
+			&m.Condition{Field: "type", Value: "Pods", Mapper: &m.Move{To: "current", From: "pods/current", DestDefined: true, NoDeleteFromField: true}},
+			&m.Condition{Field: "type", Value: "Resource", Mapper: &m.Move{To: "current", From: "resource/current"}},
+			&m.Condition{Field: "type", Value: "External", Mapper: &m.Move{To: "current", From: "external/current", DestDefined: true, NoDeleteFromField: true}},
+		).
+		MustImport(&Version, autoscaling.HorizontalPodAutoscaler{}, projectOverride{}, struct {
+			DisplayName string `json:"displayName,omitempty"`
+			Description string `json:"description,omitempty"`
+		}{})
+}
+
+func istioTypes(schemas *types.Schemas) *types.Schemas {
+	return schemas.
+		MustImport(&Version, istiov1alpha3.HTTPMatchRequest{}, struct {
+			Port *uint32 `json:"port,omitempty"`
+		}{}).
+		MustImport(&Version, istiov1alpha3.HTTPRoute{}, struct {
+			WebsocketUpgrade *bool `json:"websocketUpgrade,omitempty"`
+		}{}).
+		MustImport(&Version, istiov1alpha3.VirtualService{}, projectOverride{}, struct {
+			Status interface{}
+		}{}).
+		MustImport(&Version, istiov1alpha3.DestinationRule{}, projectOverride{}, struct {
+			Status interface{}
+		}{})
 }

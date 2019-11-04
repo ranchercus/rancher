@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 
-	"github.com/rancher/norman/leader"
 	"github.com/rancher/norman/pkg/k8scheck"
 	"github.com/rancher/rancher/pkg/audit"
 	"github.com/rancher/rancher/pkg/auth/providerrefresh"
@@ -14,6 +13,7 @@ import (
 	managementController "github.com/rancher/rancher/pkg/controllers/management"
 	"github.com/rancher/rancher/pkg/cron"
 	"github.com/rancher/rancher/pkg/dialer"
+	"github.com/rancher/rancher/pkg/features"
 	"github.com/rancher/rancher/pkg/jailer"
 	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rancher/pkg/telemetry"
@@ -22,6 +22,7 @@ import (
 	"github.com/rancher/rancher/server"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/rancher/types/config"
+	"github.com/rancher/wrangler/pkg/leader"
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/rest"
 )
@@ -42,6 +43,7 @@ type Config struct {
 	AuditLogMaxsize   int
 	AuditLogMaxbackup int
 	AuditLevel        int
+	Features          string
 }
 
 func buildScaledContext(ctx context.Context, kubeConfig rest.Config, cfg *Config) (*config.ScaledContext, *clustermanager.Manager, error) {
@@ -97,6 +99,10 @@ func Run(ctx context.Context, kubeConfig rest.Config, cfg *Config) error {
 		return err
 	}
 
+	// this step needs to happen prior to starting scaled context to ensure
+	// cache works properly
+	features.InitializeFeatures(scaledContext, cfg.Features)
+
 	if err := scaledContext.Start(ctx); err != nil {
 		return err
 	}
@@ -138,6 +144,7 @@ func Run(ctx context.Context, kubeConfig rest.Config, cfg *Config) error {
 		cronTime := settings.AuthUserInfoResyncCron.Get()
 		maxAge := settings.AuthUserInfoMaxAgeSeconds.Get()
 		providerrefresh.StartRefreshDaemon(ctx, scaledContext, management, cronTime, maxAge)
+		cleanupOrphanedSystemUsers(ctx, management)
 		logrus.Infof("Rancher startup complete")
 
 		<-ctx.Done()

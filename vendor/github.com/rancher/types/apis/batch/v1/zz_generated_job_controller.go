@@ -52,7 +52,7 @@ func NewJob(namespace, name string, obj v1.Job) *v1.Job {
 type JobList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []v1.Job
+	Items           []v1.Job `json:"items"`
 }
 
 type JobHandlerFunc func(key string, obj *v1.Job) (runtime.Object, error)
@@ -69,7 +69,9 @@ type JobController interface {
 	Informer() cache.SharedIndexInformer
 	Lister() JobLister
 	AddHandler(ctx context.Context, name string, handler JobHandlerFunc)
+	AddFeatureHandler(ctx context.Context, enabled func() bool, name string, sync JobHandlerFunc)
 	AddClusterScopedHandler(ctx context.Context, name, clusterName string, handler JobHandlerFunc)
+	AddClusterScopedFeatureHandler(ctx context.Context, enabled func() bool, name, clusterName string, handler JobHandlerFunc)
 	Enqueue(namespace, name string)
 	Sync(ctx context.Context) error
 	Start(ctx context.Context, threadiness int) error
@@ -88,9 +90,13 @@ type JobInterface interface {
 	DeleteCollection(deleteOpts *metav1.DeleteOptions, listOpts metav1.ListOptions) error
 	Controller() JobController
 	AddHandler(ctx context.Context, name string, sync JobHandlerFunc)
+	AddFeatureHandler(ctx context.Context, enabled func() bool, name string, sync JobHandlerFunc)
 	AddLifecycle(ctx context.Context, name string, lifecycle JobLifecycle)
+	AddFeatureLifecycle(ctx context.Context, enabled func() bool, name string, lifecycle JobLifecycle)
 	AddClusterScopedHandler(ctx context.Context, name, clusterName string, sync JobHandlerFunc)
+	AddClusterScopedFeatureHandler(ctx context.Context, enabled func() bool, name, clusterName string, sync JobHandlerFunc)
 	AddClusterScopedLifecycle(ctx context.Context, name, clusterName string, lifecycle JobLifecycle)
+	AddClusterScopedFeatureLifecycle(ctx context.Context, enabled func() bool, name, clusterName string, lifecycle JobLifecycle)
 }
 
 type jobLister struct {
@@ -150,9 +156,37 @@ func (c *jobController) AddHandler(ctx context.Context, name string, handler Job
 	})
 }
 
+func (c *jobController) AddFeatureHandler(ctx context.Context, enabled func() bool, name string, handler JobHandlerFunc) {
+	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
+		if !enabled() {
+			return nil, nil
+		} else if obj == nil {
+			return handler(key, nil)
+		} else if v, ok := obj.(*v1.Job); ok {
+			return handler(key, v)
+		} else {
+			return nil, nil
+		}
+	})
+}
+
 func (c *jobController) AddClusterScopedHandler(ctx context.Context, name, cluster string, handler JobHandlerFunc) {
 	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
 		if obj == nil {
+			return handler(key, nil)
+		} else if v, ok := obj.(*v1.Job); ok && controller.ObjectInCluster(cluster, obj) {
+			return handler(key, v)
+		} else {
+			return nil, nil
+		}
+	})
+}
+
+func (c *jobController) AddClusterScopedFeatureHandler(ctx context.Context, enabled func() bool, name, cluster string, handler JobHandlerFunc) {
+	c.GenericController.AddHandler(ctx, name, func(key string, obj interface{}) (interface{}, error) {
+		if !enabled() {
+			return nil, nil
+		} else if obj == nil {
 			return handler(key, nil)
 		} else if v, ok := obj.(*v1.Job); ok && controller.ObjectInCluster(cluster, obj) {
 			return handler(key, v)
@@ -257,18 +291,36 @@ func (s *jobClient) AddHandler(ctx context.Context, name string, sync JobHandler
 	s.Controller().AddHandler(ctx, name, sync)
 }
 
+func (s *jobClient) AddFeatureHandler(ctx context.Context, enabled func() bool, name string, sync JobHandlerFunc) {
+	s.Controller().AddFeatureHandler(ctx, enabled, name, sync)
+}
+
 func (s *jobClient) AddLifecycle(ctx context.Context, name string, lifecycle JobLifecycle) {
 	sync := NewJobLifecycleAdapter(name, false, s, lifecycle)
 	s.Controller().AddHandler(ctx, name, sync)
+}
+
+func (s *jobClient) AddFeatureLifecycle(ctx context.Context, enabled func() bool, name string, lifecycle JobLifecycle) {
+	sync := NewJobLifecycleAdapter(name, false, s, lifecycle)
+	s.Controller().AddFeatureHandler(ctx, enabled, name, sync)
 }
 
 func (s *jobClient) AddClusterScopedHandler(ctx context.Context, name, clusterName string, sync JobHandlerFunc) {
 	s.Controller().AddClusterScopedHandler(ctx, name, clusterName, sync)
 }
 
+func (s *jobClient) AddClusterScopedFeatureHandler(ctx context.Context, enabled func() bool, name, clusterName string, sync JobHandlerFunc) {
+	s.Controller().AddClusterScopedFeatureHandler(ctx, enabled, name, clusterName, sync)
+}
+
 func (s *jobClient) AddClusterScopedLifecycle(ctx context.Context, name, clusterName string, lifecycle JobLifecycle) {
 	sync := NewJobLifecycleAdapter(name+"_"+clusterName, true, s, lifecycle)
 	s.Controller().AddClusterScopedHandler(ctx, name, clusterName, sync)
+}
+
+func (s *jobClient) AddClusterScopedFeatureLifecycle(ctx context.Context, enabled func() bool, name, clusterName string, lifecycle JobLifecycle) {
+	sync := NewJobLifecycleAdapter(name+"_"+clusterName, true, s, lifecycle)
+	s.Controller().AddClusterScopedFeatureHandler(ctx, enabled, name, clusterName, sync)
 }
 
 type JobIndexer func(obj *v1.Job) ([]string, error)

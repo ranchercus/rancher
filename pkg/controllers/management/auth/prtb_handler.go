@@ -21,6 +21,7 @@ const (
 
 var projectManagmentPlaneResources = map[string]string{
 	"apps":                        "project.cattle.io",
+	"apprevisions":                "project.cattle.io",
 	"catalogtemplates":            "management.cattle.io",
 	"catalogtemplateversions":     "management.cattle.io",
 	"pipelines":                   "project.cattle.io",
@@ -40,6 +41,11 @@ var prtbClusterManagmentPlaneResources = map[string]string{
 	"clustercatalogs":         "management.cattle.io",
 	"catalogtemplates":        "management.cattle.io",
 	"catalogtemplateversions": "management.cattle.io",
+}
+
+var projectScopedAdminRoles = map[string]bool{
+	"project-owner": true,
+	"admin":         true,
 }
 
 type prtbLifecycle struct {
@@ -158,7 +164,11 @@ func (p *prtbLifecycle) reconcileBindings(binding *v3.ProjectRoleTemplateBinding
 	}
 
 	roleName := strings.ToLower(fmt.Sprintf("%v-clustermember", clusterName))
-	isOwnerRole := binding.RoleTemplateName == "project-owner"
+	// if roletemplate is not builtin, check if it's inherited/cloned
+	isOwnerRole, err := p.mgr.checkReferencedRoles(binding.RoleTemplateName)
+	if err != nil {
+		return err
+	}
 	var projectRoleName string
 	if isOwnerRole {
 		projectRoleName = strings.ToLower(fmt.Sprintf("%v-projectowner", projectName))

@@ -8,7 +8,6 @@ import (
 	pkgrbac "github.com/rancher/rancher/pkg/rbac"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
-
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +33,7 @@ var clusterManagmentPlaneResources = map[string]string{
 	"clustermonitorgraphs":                     "management.cattle.io",
 	"clusterregistrationtokens":                "management.cattle.io",
 	"clusterroletemplatebindings":              "management.cattle.io",
+	"etcdbackups":                              "management.cattle.io",
 	"nodes":                                    "management.cattle.io",
 	"nodepools":                                "management.cattle.io",
 	"notifiers":                                "management.cattle.io",
@@ -51,7 +51,7 @@ func (c *crtbLifecycle) Create(obj *v3.ClusterRoleTemplateBinding) (runtime.Obje
 	if err != nil {
 		return nil, err
 	}
-	err = c.reconcilBindings(obj)
+	err = c.reconcileBindings(obj)
 
 	return obj, err
 }
@@ -61,7 +61,7 @@ func (c *crtbLifecycle) Updated(obj *v3.ClusterRoleTemplateBinding) (runtime.Obj
 	if err != nil {
 		return nil, err
 	}
-	err = c.reconcilBindings(obj)
+	err = c.reconcileBindings(obj)
 	return obj, err
 }
 
@@ -111,7 +111,7 @@ func (c *crtbLifecycle) reconcileSubject(binding *v3.ClusterRoleTemplateBinding)
 // - ensure the subject can see the cluster in the mgmt API
 // - if the subject was granted owner permissions for the clsuter, ensure they can create/update/delete the cluster
 // - if the subject was granted privileges to mgmt plane resources that are scoped to the cluster, enforce those rules in the cluster's mgmt plane namespace
-func (c *crtbLifecycle) reconcilBindings(binding *v3.ClusterRoleTemplateBinding) error {
+func (c *crtbLifecycle) reconcileBindings(binding *v3.ClusterRoleTemplateBinding) error {
 	if binding.UserName == "" && binding.GroupPrincipalName == "" && binding.GroupName == "" {
 		return nil
 	}
@@ -124,8 +124,11 @@ func (c *crtbLifecycle) reconcilBindings(binding *v3.ClusterRoleTemplateBinding)
 	if cluster == nil {
 		return errors.Errorf("cannot create binding because cluster %v was not found", clusterName)
 	}
-
-	isOwnerRole := binding.RoleTemplateName == "cluster-owner"
+	// if roletemplate is not builtin, check if it's inherited/cloned
+	isOwnerRole, err := c.mgr.checkReferencedRoles(binding.RoleTemplateName)
+	if err != nil {
+		return err
+	}
 	var clusterRoleName string
 	if isOwnerRole {
 		clusterRoleName = strings.ToLower(fmt.Sprintf("%v-clusterowner", clusterName))

@@ -1,11 +1,10 @@
 package manager
 
 import (
-	"github.com/sirupsen/logrus"
-
 	helmlib "github.com/rancher/rancher/pkg/catalog/helm"
 	"github.com/rancher/rancher/pkg/namespace"
 	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
+	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -25,6 +24,17 @@ func (m *Manager) Sync(key string, obj *v3.Catalog) (runtime.Object, error) {
 	catalog, err := m.catalogClient.Get(key, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
+	}
+
+	// When setting SystemCatalog is set to bundled, always force our catalogs to keep running that way
+	if m.bundledMode {
+		if (catalog.Name == "library" || catalog.Name == "system-library") && catalog.Spec.CatalogKind != helmlib.KindHelmInternal {
+			catalog.Spec.CatalogKind = helmlib.KindHelmInternal
+			catalog, err = m.catalogClient.Update(catalog)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	commit, helm, err := helmlib.NewForceUpdate(catalog)

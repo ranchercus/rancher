@@ -9,11 +9,11 @@ import (
 
 	"github.com/pkg/errors"
 	kcluster "github.com/rancher/kontainer-engine/cluster"
+	"github.com/rancher/rancher/pkg/app/utils"
 	"github.com/rancher/rancher/pkg/controllers/user/nslabels"
 	"github.com/rancher/rancher/pkg/monitoring"
 	"github.com/rancher/rancher/pkg/node"
 	"github.com/rancher/rancher/pkg/ref"
-	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rke/pki"
 	corev1 "github.com/rancher/types/apis/core/v1"
 	mgmtv3 "github.com/rancher/types/apis/management.cattle.io/v3"
@@ -29,6 +29,7 @@ const (
 	exporterEtcdCertName = "exporter-etcd-cert"
 	etcd                 = "etcd"
 	controlplane         = "controlplane"
+	windowsNode          = "windowsNode"
 	creatorIDAnno        = "field.cattle.io/creatorId"
 )
 
@@ -156,12 +157,12 @@ func (ch *clusterHandler) doSync(cluster *mgmtv3.Cluster) error {
 }
 
 func (ch *clusterHandler) ensureAppProjectName(clusterID, appTargetNamespace string) (string, error) {
-	appDeployProjectID, err := monitoring.GetSystemProjectID(ch.app.cattleProjectClient)
+	appDeployProjectID, err := utils.GetSystemProjectID(clusterID, ch.app.projectLister)
 	if err != nil {
 		return "", err
 	}
 
-	appProjectName, err := monitoring.EnsureAppProjectName(ch.app.agentNamespaceClient, appDeployProjectID, clusterID, appTargetNamespace)
+	appProjectName, err := utils.EnsureAppProjectName(ch.app.agentNamespaceClient, appDeployProjectID, clusterID, appTargetNamespace)
 	if err != nil {
 		return "", err
 	}
@@ -236,6 +237,9 @@ func (ch *clusterHandler) getExporterEndpoint() (map[string][]string, error) {
 	controlplaneLabels := labels.Set{
 		"node-role.kubernetes.io/controlplane": "true",
 	}
+	windowsNodeLabels := labels.Set{
+		"kubernetes.io/os": "windows",
+	}
 
 	agentNodeLister := ch.app.agentNodeClient.Controller().Lister()
 	etcdNodes, err := agentNodeLister.List(metav1.NamespaceAll, etcdLablels.AsSelector())
@@ -254,6 +258,13 @@ func (ch *clusterHandler) getExporterEndpoint() (map[string][]string, error) {
 		endpointMap[controlplane] = append(endpointMap[controlplane], node.GetNodeInternalAddress(v))
 	}
 
+	windowsNodes, err := agentNodeLister.List(metav1.NamespaceAll, windowsNodeLabels.AsSelector())
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get windows nodes")
+	}
+	for _, v := range windowsNodes {
+		endpointMap[windowsNode] = append(endpointMap[windowsNode], node.GetNodeInternalAddress(v))
+	}
 	return endpointMap, nil
 }
 
@@ -280,13 +291,11 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 	mustAppAnswers := map[string]string{
 		"enabled": "false",
 
-		"exporter-coredns.enabled":  "false",
 		"exporter-coredns.apiGroup": monitoring.APIVersion.Group,
 
 		"exporter-kube-controller-manager.enabled":  "false",
 		"exporter-kube-controller-manager.apiGroup": monitoring.APIVersion.Group,
 
-		"exporter-kube-dns.enabled":  "false",
 		"exporter-kube-dns.apiGroup": monitoring.APIVersion.Group,
 
 		"exporter-kube-etcd.enabled":  "false",
@@ -329,7 +338,10 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 		"prometheus.ruleSelector.matchExpressions[0].values[1]":                             monitoring.CattleMonitoringPrometheusRuleLabelValue,
 	}
 
-	appAnswers := monitoring.OverwriteAppAnswers(optionalAppAnswers, cluster.Annotations)
+	appAnswers, appCatalogID, err := monitoring.OverwriteAppAnswersAndCatalogID(optionalAppAnswers, cluster.Annotations, ch.app.catalogTemplateLister)
+	if err != nil {
+		return nil, err
+	}
 
 	// cannot overwrite mustAppAnswers
 	for mustKey, mustVal := range mustAppAnswers {
@@ -367,6 +379,18 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 				appAnswers[key2] = v
 			}
 		}
+
+		if windowsNodeEndpoints, ok := systemComponentMap[windowsNode]; ok {
+			appAnswers["exporter-node-windows.enabled"] = "true"
+			if port, ok := appAnswers["exporter-node.ports.metrics.port"]; ok {
+				appAnswers["exporter-node-windows.ports.metrics.port"] = port
+			}
+			sort.Strings(windowsNodeEndpoints)
+			for k, v := range windowsNodeEndpoints {
+				key := fmt.Sprintf("exporter-node-windows.endpoints[%d]", k)
+				appAnswers[key] = v
+			}
+		}
 	}
 
 	creator, err := ch.app.systemAccountManager.GetSystemUser(ch.clusterName)
@@ -374,7 +398,6 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 		return nil, err
 	}
 
-	appCatalogID := settings.SystemMonitoringCatalogID.Get()
 	app := &v3.App{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{creatorIDAnno: creator.Name},
@@ -391,7 +414,7 @@ func (ch *clusterHandler) deployApp(appName, appTargetNamespace string, appProje
 		},
 	}
 
-	_, err = monitoring.DeployApp(ch.app.cattleAppClient, appDeployProjectID, app, false)
+	_, err = utils.DeployApp(ch.app.cattleAppClient, appDeployProjectID, app, false)
 	if err != nil {
 		return nil, err
 	}
