@@ -3,7 +3,7 @@ FROM ubuntu:18.04
 
 ARG DAPPER_HOST_ARCH
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} ARCH=${DAPPER_HOST_ARCH}
-ENV CATTLE_HELM_VERSION v2.10.0-rancher10
+ENV CATTLE_HELM_VERSION v2.14.3-rancher1
 ENV CATTLE_K3S_VERSION v0.8.0
 ENV CATTLE_ETCD_VERSION v3.3.14
 
@@ -15,24 +15,22 @@ RUN curl -sLf https://github.com/rancher/machine-package/releases/download/v0.15
 ENV GOLANG_ARCH_amd64=amd64 GOLANG_ARCH_arm=armv6l GOLANG_ARCH_arm64=arm64 GOLANG_ARCH=GOLANG_ARCH_${ARCH} \
     GOPATH=/go PATH=/go/bin:/usr/local/go/bin:${PATH} SHELL=/bin/bash
 
-RUN wget -O - https://storage.googleapis.com/golang/go1.12.10.linux-${!GOLANG_ARCH}.tar.gz | tar -xzf - -C /usr/local && \
-    go get github.com/rancher/trash && \
-    go get -u golang.org/x/lint/golint && \
-    go get -d golang.org/x/tools/cmd/goimports && \
-    # This needs to be kept up to date with rancher/types
-    git -C /go/src/golang.org/x/tools/cmd/goimports checkout -b release-branch.go1.12 origin/release-branch.go1.12 && \
-    go install golang.org/x/tools/cmd/goimports
+RUN wget -O - https://storage.googleapis.com/golang/go1.12.10.linux-${!GOLANG_ARCH}.tar.gz | tar -xzf - -C /usr/local
+
+RUN if [ "${ARCH}" == "amd64" ]; then \	
+    curl -sL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s v1.20.0; \	
+    fi
 
 ENV DOCKER_URL_amd64=https://get.docker.com/builds/Linux/x86_64/docker-1.10.3 \
     DOCKER_URL_arm=https://github.com/rancher/docker/releases/download/v1.10.3-ros1/docker-1.10.3_arm \
     DOCKER_URL_arm64=https://github.com/rancher/docker/releases/download/v1.10.3-ros1/docker-1.10.3_arm64 \
     DOCKER_URL=DOCKER_URL_${ARCH}
 
-ENV HELM_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/helm \
-    HELM_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/helm-arm64 \
+ENV HELM_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-helm \
+    HELM_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-helm-arm64 \
     HELM_URL=HELM_URL_${ARCH} \
-    TILLER_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/tiller \
-    TILLER_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/tiller-arm64 \
+    TILLER_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-tiller \
+    TILLER_URL_arm64=https://github.com/rancher/helm/releases/download/${CATTLE_HELM_VERSION}/rancher-tiller-arm64 \
     TILLER_URL=TILLER_URL_${ARCH} \
     K3S_URL_amd64=https://github.com/rancher/k3s/releases/download/${CATTLE_K3S_VERSION}/k3s \
     K3S_URL_arm64=https://github.com/rancher/k3s/releases/download/${CATTLE_K3S_VERSION}/k3s-arm64 \
@@ -41,24 +39,20 @@ ENV HELM_URL_amd64=https://github.com/rancher/helm/releases/download/${CATTLE_HE
     ETCD_URL_arm64=https://github.com/etcd-io/etcd/releases/download/${CATTLE_ETCD_VERSION}/etcd-${CATTLE_ETCD_VERSION}-linux-arm64.tar.gz \
     ETCD_URL=ETCD_URL_${ARCH}
 
-RUN curl -sLf ${!HELM_URL} > /usr/bin/helm && \
-    curl -sLf ${!TILLER_URL} > /usr/bin/tiller && \
+RUN curl -sLf ${!HELM_URL} > /usr/bin/rancher-helm && \
+    curl -sLf ${!TILLER_URL} > /usr/bin/rancher-tiller && \
     curl -sLf ${!K3S_URL} > /usr/bin/k3s && \
     curl -sfL ${!ETCD_URL} | tar xvzf - --strip-components=1 -C /usr/bin/ etcd-${CATTLE_ETCD_VERSION}-linux-${ARCH}/etcd && \
-    chmod +x /usr/bin/helm /usr/bin/tiller /usr/bin/k3s && \
-    helm init -c && \
-    helm plugin install https://github.com/rancher/helm-unittest && \
+    chmod +x /usr/bin/rancher-helm /usr/bin/rancher-tiller /usr/bin/k3s && \
+    ln -s /usr/bin/rancher-helm /usr/bin/helm && \
+    ln -s /usr/bin/rancher-tiller /usr/bin/tiller && \
+    rancher-helm init -c && \
+    rancher-helm plugin install https://github.com/rancher/helm-unittest && \
     mkdir -p /go/src/github.com/rancher/rancher/.kube && \
     ln -s /etc/rancher/k3s/k3s.yaml /go/src/github.com/rancher/rancher/.kube/k3s.yaml
 
 RUN wget -O - ${!DOCKER_URL} > /usr/bin/docker && chmod +x /usr/bin/docker
 
-# FIXME: Update to Rancher RKE when released
-ENV RKE_URL_amd64=https://github.com/rancher/rke/releases/download/v0.2.0-rc8/rke_linux-amd64 \
-    RKE_URL_arm64=https://github.com/rancher/rke/releases/download/v0.2.0-rc8/rke_linux-arm64 \
-    RKE_URL=RKE_URL_${ARCH}
-
-RUN wget -O - ${!RKE_URL} > /usr/bin/rke && chmod +x /usr/bin/rke
 ENV KUBECTL_URL=https://storage.googleapis.com/kubernetes-release/release/v1.11.0/bin/linux/${ARCH}/kubectl
 RUN wget -O - ${KUBECTL_URL} > /usr/bin/kubectl && chmod +x /usr/bin/kubectl
 
