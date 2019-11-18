@@ -475,17 +475,6 @@ func (d *ConfigSyncer) addRecipients(notifiers []*v3.Notifier, receiver *alertco
 						ProxyURL: *url,
 					}
 				}
-
-				if notifier.Spec.PagerdutyConfig.HTTPClientConfig != nil {
-					url, err := toAlertManagerURL(notifier.Spec.PagerdutyConfig.HTTPClientConfig.ProxyURL)
-					if err != nil {
-						logrus.Errorf("Failed to parse pagerduty proxy url %s, %v", notifier.Spec.PagerdutyConfig.HTTPClientConfig.ProxyURL, err)
-						continue
-					}
-					pagerduty.HTTPConfig = &alertconfig.HTTPClientConfig{
-						ProxyURL: *url,
-					}
-				}
 				if r.Recipient != "" {
 					pagerduty.ServiceKey = alertconfig.Secret(r.Recipient)
 				}

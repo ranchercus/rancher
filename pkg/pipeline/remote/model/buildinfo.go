@@ -16,4 +16,5 @@ type BuildInfo struct {
 	Author          string `json:"author,omitempty"`
 	AvatarURL       string `json:"avatarUrl,omitempty"`
 	Email           string `json:"email,omitempty"`
+	RunCallbackScript bool `json:"runCallbackScript,omitempty"`
 }

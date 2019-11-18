@@ -109,6 +109,7 @@ func (h *Handler) run(apiContext *types.APIContext) error {
 	}
 	info.TriggerType = utils.TriggerTypeUser
 	info.TriggerUserName = userName
+	info.RunCallbackScript = runPipelineInput.RunCallbackScript
 	execution, err := utils.GenerateExecution(h.PipelineExecutions, pipeline, pipelineConfig, info)
 	if err != nil {
 		return err

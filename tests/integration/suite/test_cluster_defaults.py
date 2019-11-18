@@ -2,6 +2,7 @@ import json
 import pytest
 from rancher import ApiError
 from .common import random_str
+from .conftest import wait_for
 
 
 @pytest.mark.skip(reason="cluster-defaults disabled")
@@ -73,6 +74,32 @@ def test_rke_initial_conditions(admin_mc, remove_resource):
     assert 'exportYaml' in cluster.actions
 
 
+def test_psp_enabled_set(admin_mc, remove_resource):
+    """Asserts podSecurityPolicy field is used to populate pspEnabled in
+    cluster capabilities"""
+    admin_client = admin_mc.client
+    cluster = admin_client.create_cluster(
+        name=random_str(), rancherKubernetesEngineConfig={
+            "accessKey": "asdfsd",
+            "services": {
+                "kubeApi": {
+                    "podSecurityPolicy": True,
+                }
+            }
+        })
+    remove_resource(cluster)
+
+    def psp_set_to_true():
+        updated_cluster = admin_client.by_id_cluster(id=cluster.id)
+        capabilities = updated_cluster.get("capabilities")
+        if capabilities is not None:
+            return capabilities.get("pspEnabled") is True
+        return None
+
+    wait_for(lambda: psp_set_to_true(), fail_handler=lambda: "failed waiting "
+             "for pspEnabled to be set")
+
+
 def test_import_initial_conditions(admin_mc, remove_resource):
     cluster = admin_mc.client.create_cluster(name=random_str())
     remove_resource(cluster)
@@ -96,3 +123,43 @@ def test_rke_k8s_deprecated_versions(admin_mc, remove_resource):
                                     'v1.8.10-rancher1-1 is deprecated'
     client.update_by_id_setting(id=deprecated_versions_setting.id,
                                 value="")
+
+
+def test_save_as_template_action_rbac(admin_mc, remove_resource, user_factory):
+    cluster = admin_mc.client.create_cluster(name=random_str(),
+                                             rancherKubernetesEngineConfig={
+                                                 "services": {
+                                                     "type":
+                                                     "rkeConfigServices",
+                                                     "kubeApi": {
+                                                         "alwaysPullImages":
+                                                         "false",
+                                                         "podSecurityPolicy":
+                                                         "false",
+                                                         "serviceNodePort\
+                                                         Range":
+                                                         "30000-32767",
+                                                         "type":
+                                                         "kubeAPIService"
+                                                     }
+                                                 }
+                                             })
+    remove_resource(cluster)
+    assert cluster.conditions[0].type == 'Pending'
+    assert cluster.conditions[0].status == 'True'
+    try:
+        admin_mc.client.action(obj=cluster, action_name="saveAsTemplate",
+                               clusterTemplateName="template1",
+                               clusterTemplateRevisionName="v1")
+    except ApiError as e:
+        assert e.error.status == 503
+
+    user = user_factory()
+    user_cluster = user.client.create_cluster(name=random_str())
+    remove_resource(user_cluster)
+    assert cluster.conditions[0].type == 'Pending'
+    assert cluster.conditions[0].status == 'True'
+    try:
+        user.client.action(obj=user_cluster, action_name="saveAsTemplate")
+    except AttributeError as e:
+        assert e is not None

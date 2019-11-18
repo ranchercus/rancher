@@ -118,4 +118,6 @@ const (
 	StepCPULimitDefault               = "1"
 
 	DefaultTimeout = 60
+
+	CallbackScriptConfigMap = "callback-script-cm"
 )

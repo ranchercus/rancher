@@ -4,9 +4,8 @@ package settings
 var (
 	PipelineRegistryInsecure = NewSetting("pipeline-registry-insecure", "false")
 	PipelineDefaultRegistry = NewSetting("pipeline-default-registry", "")
-	PipelineShellDir = NewSetting("pipeline-shell-dir", "")
-	PipelineShellName = NewSetting("pipeline-shell-name", "")
 	PipelineNodeToleration = NewSetting("pipeline-node-toleration", "")
 	PipelineNodeSelector = NewSetting("pipeline-node-selector", "")
 	PipelineLocalShare = NewSetting("pipeline-local-share", "")
+	PipelineEmptyDirMemory = NewSetting("pipeline-emptydir-memory", "false")
 )

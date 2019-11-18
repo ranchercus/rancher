@@ -250,12 +250,16 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 		})
 	}
 
-	if settings.PipelineShellDir.Get() != "" && settings.PipelineShellName.Get() != ""{
+	if c.execution.Spec.RunCallbackScript {
+		mode := int32(0777)
 		pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
-			Name: "pshell",
+			Name: "callback-script",
 			VolumeSource: v1.VolumeSource{
-				HostPath: &v1.HostPathVolumeSource{
-					Path: settings.PipelineShellDir.Get(),
+				ConfigMap: &v1.ConfigMapVolumeSource{
+					LocalObjectReference: v1.LocalObjectReference {
+						Name: utils.CallbackScriptConfigMap,
+					},
+					DefaultMode: &mode,
 				},
 			},
 		})

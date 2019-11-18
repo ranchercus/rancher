@@ -138,6 +138,11 @@ func (l *Lifecycle) deploy(projectName string) error {
 		return errors.Wrapf(err, "Error creating the nginx proxy")
 	}
 
+	cbscm := getCallbackScriptConfigMap(nsName)
+	if _, err := l.configMaps.Create(cbscm); err != nil && !apierrors.IsAlreadyExists(err) {
+		return errors.Wrapf(err, "Error creating the callback script config map")
+	}
+
 	return l.reconcileRb(projectName)
 }
 
@@ -933,4 +938,13 @@ func (l *Lifecycle) reconcileRegistryCredential(projectName, token string) error
 		return errors.Wrapf(err, "Error create credential for local registry")
 	}
 	return nil
+}
+
+func getCallbackScriptConfigMap(ns string) *corev1.ConfigMap {
+	return &corev1.ConfigMap {
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      utils.CallbackScriptConfigMap,
+		},
+	}
 }

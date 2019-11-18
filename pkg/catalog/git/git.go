@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"fmt"
 	"net/url"
 	"os/exec"
 	"strings"

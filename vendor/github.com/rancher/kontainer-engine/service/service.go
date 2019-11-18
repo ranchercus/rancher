@@ -455,18 +455,6 @@ func (r *RunningDriver) Start() (string, error) {
 			cmd.Env = whitelistEnvvars([]string{"PATH=/usr/bin"})
 		}
 
-		if os.Getenv("CATTLE_DEV_MODE") == "" {
-			cred, err := getUserCred()
-			if err != nil {
-				return "", errors.WithMessage(err, "get user cred error")
-			}
-
-			cmd.SysProcAttr = &syscall.SysProcAttr{}
-			cmd.SysProcAttr.Credential = cred
-			cmd.SysProcAttr.Chroot = "/opt/jail/driver-jail"
-			cmd.Env = whitelistEnvvars([]string{"PATH=/usr/bin"})
-		}
-
 		// redirect output to console
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

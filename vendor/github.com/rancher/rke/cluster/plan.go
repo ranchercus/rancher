@@ -19,7 +19,7 @@ import (
 	"github.com/rancher/rke/pki"
 	"github.com/rancher/rke/services"
 	"github.com/rancher/rke/util"
-	"github.com/rancher/types/apis/management.cattle.io/v3"
+	v3 "github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
 )
 
@@ -71,7 +71,7 @@ func GetServiceOptionData(data map[string]interface{}) map[string]*v3.Kubernetes
 
 func GeneratePlan(ctx context.Context, rkeConfig *v3.RancherKubernetesEngineConfig, hostsInfoMap map[string]types.Info, data map[string]interface{}) (v3.RKEPlan, error) {
 	clusterPlan := v3.RKEPlan{}
-	myCluster, err := InitClusterObject(ctx, rkeConfig, ExternalFlags{})
+	myCluster, err := InitClusterObject(ctx, rkeConfig, ExternalFlags{}, "")
 	if err != nil {
 		return clusterPlan, err
 	}
@@ -111,15 +111,23 @@ func BuildRKEConfigNodePlan(ctx context.Context, myCluster *Cluster, host *hosts
 
 		portChecks = append(portChecks, BuildPortChecksFromPortList(host, EtcdPortList, ProtocolTCP)...)
 	}
-	cloudConfig := v3.File{
-		Name:     cloudConfigFileName,
-		Contents: b64.StdEncoding.EncodeToString([]byte(myCluster.CloudConfigFile)),
+	files := []v3.File{
+		v3.File{
+			Name:     cloudConfigFileName,
+			Contents: b64.StdEncoding.EncodeToString([]byte(myCluster.CloudConfigFile)),
+		},
+	}
+	if myCluster.IsEncryptionEnabled() {
+		files = append(files, v3.File{
+			Name:     EncryptionProviderFilePath,
+			Contents: b64.StdEncoding.EncodeToString([]byte(myCluster.EncryptionConfig.EncryptionProviderFile)),
+		})
 	}
 	return v3.RKEConfigNodePlan{
 		Address:    host.Address,
 		Processes:  osLimitationFilter(hostDockerInfo.OSType, processes),
 		PortChecks: portChecks,
-		Files:      []v3.File{cloudConfig},
+		Files:      files,
 		Annotations: map[string]string{
 			k8s.ExternalAddressAnnotation: host.Address,
 			k8s.InternalAddressAnnotation: host.InternalAddress,
@@ -212,6 +220,14 @@ func (c *Cluster) BuildKubeAPIProcess(host *hosts.Host, prefixPath string, svcOp
 			c.Services.KubeAPI.ExtraEnv,
 			fmt.Sprintf("%s=%s", CloudConfigSumEnv, getCloudConfigChecksum(c.CloudConfigFile)))
 	}
+	if c.EncryptionConfig.EncryptionProviderFile != "" {
+		CommandArgs["experimental-encryption-provider-config"] = EncryptionProviderFilePath
+	}
+
+	if c.IsKubeletGenerateServingCertificateEnabled() {
+		CommandArgs["kubelet-certificate-authority"] = pki.GetCertPath(pki.CACertName)
+	}
+
 	serviceOptions := c.GetKubernetesServicesOptions(host.DockerInfo.OSType, svcOptionData)
 	if serviceOptions.KubeAPI != nil {
 		for k, v := range serviceOptions.KubeAPI {
@@ -253,11 +269,25 @@ func (c *Cluster) BuildKubeAPIProcess(host *hosts.Host, prefixPath string, svcOp
 		CommandArgs[admissionControlOptionName] = CommandArgs[admissionControlOptionName] + ",AlwaysPullImages"
 	}
 
+	if c.Services.KubeAPI.AuditLog != nil {
+		if alc := c.Services.KubeAPI.AuditLog.Configuration; alc != nil {
+			CommandArgs[KubeAPIArgAuditLogPath] = alc.Path
+			CommandArgs[KubeAPIArgAuditLogMaxAge] = strconv.Itoa(alc.MaxAge)
+			CommandArgs[KubeAPIArgAuditLogMaxBackup] = strconv.Itoa(alc.MaxBackup)
+			CommandArgs[KubeAPIArgAuditLogMaxSize] = strconv.Itoa(alc.MaxSize)
+			CommandArgs[KubeAPIArgAuditLogFormat] = alc.Format
+			CommandArgs[KubeAPIArgAuditPolicyFile] = DefaultKubeAPIArgAuditPolicyFileValue
+		}
+	}
+
 	VolumesFrom := []string{
 		services.SidekickContainerName,
 	}
 	Binds := []string{
 		fmt.Sprintf("%s:/etc/kubernetes:z", path.Join(prefixPath, "/etc/kubernetes")),
+	}
+	if c.Services.KubeAPI.AuditLog != nil && c.Services.KubeAPI.AuditLog.Enabled {
+		Binds = append(Binds, fmt.Sprintf("%s:/var/log/kube-audit:z", path.Join(prefixPath, "/var/log/kube-audit")))
 	}
 
 	// Override args if they exist, add additional args
@@ -427,6 +457,11 @@ func (c *Cluster) BuildKubeletProcess(host *hosts.Host, prefixPath string, svcOp
 			CommandArgs["cloud-config"] = path.Join(prefixPath, cloudConfigFileName)
 		}
 	}
+	if c.IsKubeletGenerateServingCertificateEnabled() {
+		CommandArgs["tls-cert-file"] = pki.GetCertPath(pki.GetCrtNameForHost(host, pki.KubeletCertName))
+		CommandArgs["tls-private-key-file"] = pki.GetCertPath(fmt.Sprintf("%s-key", pki.GetCrtNameForHost(host, pki.KubeletCertName)))
+	}
+
 	if len(c.CloudProvider.Name) > 0 {
 		c.Services.Kubelet.ExtraEnv = append(
 			c.Services.Kubelet.ExtraEnv,
@@ -607,9 +642,11 @@ func (c *Cluster) BuildKubeProxyProcess(host *hosts.Host, prefixPath string, svc
 	VolumesFrom := []string{
 		services.SidekickContainerName,
 	}
+	//TODO: we should reevaluate if any of the bind mounts here should be using read-only mode
 	Binds := []string{
 		fmt.Sprintf("%s:/etc/kubernetes:z", path.Join(prefixPath, "/etc/kubernetes")),
 		"/run:/run",
+		fmt.Sprintf("%s:/lib/modules:z,ro", path.Join(prefixPath, "/lib/modules")),
 	}
 	if host.DockerInfo.OSType == "windows" { // compatible with Windows
 		Binds = []string{
@@ -617,6 +654,7 @@ func (c *Cluster) BuildKubeProxyProcess(host *hosts.Host, prefixPath string, svc
 			fmt.Sprintf("%s:c:/host/etc/kubernetes", path.Join(prefixPath, "/etc/kubernetes")),
 			// exchange resources with other components
 			fmt.Sprintf("%s:c:/host/run", path.Join(prefixPath, "/run")),
+			fmt.Sprintf("%s:c:/host/lib/modules", path.Join(prefixPath, "/lib/modules")),
 		}
 	}
 
@@ -864,7 +902,7 @@ func (c *Cluster) BuildSidecarProcess(host *hosts.Host, prefixPath string) v3.Pr
 }
 
 func (c *Cluster) BuildEtcdProcess(host *hosts.Host, etcdHosts []*hosts.Host, prefixPath string) v3.Process {
-	nodeName := pki.GetEtcdCrtName(host.InternalAddress)
+	nodeName := pki.GetCrtNameForHost(host, pki.EtcdCertName)
 	initCluster := ""
 	architecture := "amd64"
 	if len(etcdHosts) == 0 {

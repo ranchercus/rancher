@@ -93,8 +93,11 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		command = fmt.Sprintf(`sh ''' %s '''`, step.RunScriptConfig.ShellScript)
 	} else if step.PublishImageConfig != nil {
 		command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker'''`
-		if pushFilePath := strings.TrimSpace(step.PublishImageConfig.PushFilePath); pushFilePath != "" {
-			command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker && pushfile `+ step.PublishImageConfig.PushFilePath +`'''`
+		if c.execution.Spec.RunCallbackScript {
+			if script := strings.TrimSpace(step.PublishImageConfig.CallbackScript); script != "" {
+				params := strings.TrimSpace(step.PublishImageConfig.CallbackScriptParams)
+				command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker && `+ script + ` ` + params +`'''`
+			}
 		}
 	} else if step.ApplyYamlConfig != nil {
 		command = `sh ''' kube-apply '''`
@@ -223,12 +226,10 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 			ReadOnly:  true,
 		})
 	}
-	if strings.TrimSpace(config.PushFilePath) != "" {
+	if c.execution.Spec.RunCallbackScript {
 		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
-			Name:      "pshell",
-			MountPath: "/usr/local/bin/pushfile",
-			SubPath:   settings.PipelineShellName.Get(),
-			ReadOnly:  true,
+			Name:      "callback-script",
+			MountPath: "/callbackscript",
 		})
 	}
 }

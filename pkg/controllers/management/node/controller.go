@@ -50,14 +50,15 @@ var (
 // aliases maps Schema field => driver field
 // The opposite of this lives in pkg/controllers/management/drivers/nodedriver/machine_driver.go
 var aliases = map[string]map[string]string{
-	"aliyunecs":    map[string]string{"sshKeyContents": "sshKeypath"},
-	"amazonec2":    map[string]string{"sshKeyContents": "sshKeypath", "userdata": "userdata"},
-	"azure":        map[string]string{"customData": "customData"},
-	"digitalocean": map[string]string{"sshKeyContents": "sshKeyPath", "userdata": "userdata"},
-	"exoscale":     map[string]string{"sshKey": "sshKey", "userdata": "userdata"},
-	"openstack":    map[string]string{"cacert": "cacert", "privateKeyFile": "privateKeyFile", "userDataFile": "userDataFile"},
-	"otc":          map[string]string{"privateKeyFile": "privateKeyFile"},
-	"packet":       map[string]string{"userdata": "userdata"},
+	"aliyunecs":     map[string]string{"sshKeyContents": "sshKeypath"},
+	"amazonec2":     map[string]string{"sshKeyContents": "sshKeypath", "userdata": "userdata"},
+	"azure":         map[string]string{"customData": "customData"},
+	"digitalocean":  map[string]string{"sshKeyContents": "sshKeyPath", "userdata": "userdata"},
+	"exoscale":      map[string]string{"sshKey": "sshKey", "userdata": "userdata"},
+	"openstack":     map[string]string{"cacert": "cacert", "privateKeyFile": "privateKeyFile", "userDataFile": "userDataFile"},
+	"otc":           map[string]string{"privateKeyFile": "privateKeyFile"},
+	"packet":        map[string]string{"userdata": "userdata"},
+	"vmwarevsphere": map[string]string{"cloudConfig": "cloud-config"},
 }
 
 func Register(ctx context.Context, management *config.ManagementContext) {
@@ -331,13 +332,20 @@ func aliasToPath(driver string, config map[string]interface{}, ns string) error 
 				if fileContents == "" {
 					continue
 				}
-				hasher.Reset()
-				hasher.Write([]byte(fileContents))
-				sha := base32.StdEncoding.WithPadding(-1).EncodeToString(hasher.Sum(nil))[:10]
+
 				fileName := driverField
 				if ok := nodedriver.SSHKeyFields[schemaField]; ok {
 					fileName = "id_rsa"
 				}
+
+				// The ending newline gets stripped, add em back
+				if !strings.HasSuffix(fileContents, "\n") {
+					fileContents = fileContents + "\n"
+				}
+
+				hasher.Reset()
+				hasher.Write([]byte(fileContents))
+				sha := base32.StdEncoding.WithPadding(-1).EncodeToString(hasher.Sum(nil))[:10]
 
 				fileDir := path.Join(baseDir, sha)
 
