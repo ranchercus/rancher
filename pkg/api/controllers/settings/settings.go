@@ -21,6 +21,14 @@ func Register(context *config.ScaledContext) error {
 		return err
 	}
 
+	csp := &clusterSettingsProvider{
+		settingsLister: context.Management.ClusterSettings("").Controller().Lister(),
+	}
+
+	if err := settings.SetClusterProvider(csp); err != nil {
+		return err
+	}
+
 	return nil
 }
 

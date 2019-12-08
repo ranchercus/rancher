@@ -10,9 +10,9 @@ import (
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/settings"
 	mv3 "github.com/rancher/types/apis/management.cattle.io/v3"
-	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
+	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"gopkg.in/yaml.v2"
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 )
 
 func (c *jenkinsPipelineConverter) getStepContainer(stageOrdinal int, stepOrdinal int) (v1.Container, error) {
@@ -26,9 +26,17 @@ func (c *jenkinsPipelineConverter) getStepContainer(stageOrdinal int, stepOrdina
 		Env:     []v1.EnvVar{},
 	}
 	if step.SourceCodeConfig != nil {
-		if err := c.configCloneStepContainer(&container, step); err != nil {
-			return container, err
+		//Author: Zac +
+		if stepOrdinal == 0 {
+			if err := c.configCloneStepContainer(&container, step); err != nil {
+				return container, err
+			}
+		} else {
+			if err := c.configSonarStepContainer(&container, step); err != nil {
+				return container, err
+			}
 		}
+		//Author: Zac -
 	} else if step.RunScriptConfig != nil {
 		c.configRunScriptStepContainer(&container, step)
 	} else if step.PublishImageConfig != nil {
@@ -87,8 +95,22 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		stepName := fmt.Sprintf("step-%d-%d", stageOrdinal, stepOrdinal)
 		command = fmt.Sprintf(markSkipScript, stepName)
 	} else if step.SourceCodeConfig != nil {
-		command = fmt.Sprintf("checkout([$class: 'GitSCM', branches: [[name: 'local/temp']], userRemoteConfigs: [[url: '%s', refspec: '+%s:refs/remotes/local/temp', credentialsId: '%s']]])",
-			c.execution.Spec.RepositoryURL, c.execution.Spec.Ref, c.execution.Name)
+		// Author: Zac +
+		if stepOrdinal == 0 {
+			command = fmt.Sprintf("checkout([$class: 'GitSCM', branches: [[name: 'local/temp']], userRemoteConfigs: [[url: '%s', refspec: '+%s:refs/remotes/local/temp', credentialsId: '%s']]])",
+				c.execution.Spec.RepositoryURL, c.execution.Spec.Ref, c.execution.Name)
+	//		command = fmt.Sprintf(`checkout([$class: 'GitSCM', branches: [[name: 'local/temp']], userRemoteConfigs: [[url: '%s', refspec: '+%s:refs/remotes/local/temp', credentialsId: '%s']]])
+	//sh ''' %s '''`,
+	//			c.execution.Spec.RepositoryURL, c.execution.Spec.Ref, c.execution.Name, `git --no-pager log -100 --date=local --pretty='%cd[%cn]-%h: %s' > gitchangelogtobranch.log`)
+		} else {
+			command = `withSonarQubeEnv() {
+				sh ''' echo "Show Last 100 Git Change Logs"
+				git --no-pager log -100 --date=local --pretty='%cd[%cn]-%h: %s' 
+                cp /sonar-project.properties .
+                sonar-scanner'''
+			}`
+		}
+		// Author: Zac -
 	} else if step.RunScriptConfig != nil {
 		command = fmt.Sprintf(`sh ''' %s '''`, step.RunScriptConfig.ShellScript)
 	} else if step.PublishImageConfig != nil {
@@ -96,8 +118,16 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		if c.execution.Spec.RunCallbackScript {
 			if script := strings.TrimSpace(step.PublishImageConfig.CallbackScript); script != "" {
 				params := strings.TrimSpace(step.PublishImageConfig.CallbackScriptParams)
+				if script[:1] == "/" {
+					script = "/callbackscript" + script
+				} else {
+					script = "/callbackscript/" + script
+				}
 				command = `sh '''/usr/local/bin/dockerd-entrypoint.sh /bin/drone-docker && `+ script + ` ` + params +`'''`
 			}
+		}
+		if step.PublishImageConfig.Deploy {
+			command = command[:len(command)-3] + " && deploy '''"
 		}
 	} else if step.ApplyYamlConfig != nil {
 		command = `sh ''' kube-apply '''`
@@ -130,9 +160,16 @@ func (c *jenkinsPipelineConverter) configCloneStepContainer(container *v1.Contai
 	return injectResources(container, utils.PipelineToolsCPULimitDefault, utils.PipelineToolsCPURequestDefault, utils.PipelineToolsMemoryLimitDefault, utils.PipelineToolsMemoryRequestDefault)
 }
 
+//Author: Zac +
+func (c *jenkinsPipelineConverter) configSonarStepContainer(container *v1.Container, step *v3.Step) error {
+	container.Image = "rancher/pipeline-sonar-scanner:1.0.2"
+	return injectResources(container, utils.PipelineToolsCPULimitDefault, utils.PipelineToolsCPURequestDefault, utils.PipelineToolsMemoryLimitDefault, utils.PipelineToolsMemoryRequestDefault)
+}
+//Author: Zac -
+
 func (c *jenkinsPipelineConverter) configRunScriptStepContainer(container *v1.Container, step *v3.Step) {
 	container.Image = step.RunScriptConfig.Image
-	if locstr := settings.PipelineLocalShare.Get(); locstr != "" {
+	if locstr := settings.GetPipelineSetting(c.clusterName).LocalShare; locstr != "" {
 		shares := strings.Split(locstr, ",")
 		for idx, share := range shares {
 			kv := strings.Split(share, ":")
@@ -164,7 +201,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
 	processedRegistry := strings.ToLower(reg.ReplaceAllString(registry, ""))
 	secretName := fmt.Sprintf("%s-%s", c.execution.Namespace, processedRegistry)
-	if registry == settings.PipelineDefaultRegistry.Get() {
+	if registry == settings.GetPipelineSetting(c.clusterName).DefaultRegistry {
 		secretName = fmt.Sprintf("%s-%s-%s", c.execution.Namespace, processedRegistry, c.execution.Spec.TriggerUserName)
 	}
 	secretUserKey := utils.PublishSecretUserKey
@@ -181,6 +218,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 		registry = ""
 	}
 
+	defaultRegistry := settings.GetPipelineSetting(c.clusterName).DefaultRegistry
 	container.Image = images.Resolve(mv3.ToolsSystemImages.PipelineSystemImages.PluginsDocker)
 	publishEnv := map[string]string{
 		"DOCKER_REGISTRY":            registry,
@@ -188,8 +226,13 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 		"PLUGIN_TAG":                 tag,
 		"PLUGIN_DOCKERFILE":          config.DockerfilePath,
 		"PLUGIN_CONTEXT":             config.BuildContext,
-		"PLUGIN_BUILD_FROM_REGISTRY": settings.PipelineDefaultRegistry.Get(),
-		"PLUGIN_INSECURE":            settings.PipelineRegistryInsecure.Get(),
+		"PLUGIN_BUILD_FROM_REGISTRY": defaultRegistry,
+		"PLUGIN_INSECURE":            fmt.Sprintf("%v", settings.GetPipelineSetting(c.clusterName).RegistryInsecure),
+		"TARGETNAMESPACE":            config.TargetNamespace,
+		"WORKLOADID":                 config.WorkloadId,
+		"DEPLOYMENT_PORT":            config.Port,
+		"CONTAINERINDEX":             fmt.Sprintf("%d", config.ContainerIndex),
+		"DEPLOY_SERVICE":             fmt.Sprintf("%v", config.DeployService),
 	}
 	for k, v := range publishEnv {
 		container.Env = append(container.Env, v1.EnvVar{Name: k, Value: v})
@@ -219,7 +262,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 			ReadOnly:  true,
 		},
 	}
-	if registry == settings.PipelineDefaultRegistry.Get() && settings.PipelineRegistryInsecure.Get() == "false" {
+	if defaultRegistry != "" && registry == defaultRegistry && !settings.GetPipelineSetting(c.clusterName).RegistryInsecure {
 		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
 			Name: fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, processedRegistry),
 			MountPath: fmt.Sprintf("/etc/docker/certs.d/%s", registry),

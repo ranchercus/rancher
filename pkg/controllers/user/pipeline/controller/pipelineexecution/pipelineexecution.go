@@ -65,6 +65,8 @@ type executionSummary struct {
 }
 
 type Lifecycle struct {
+	clusterName          string
+
 	systemAccountManager *systemaccount.Manager
 	namespaceLister      v1.NamespaceLister
 	namespaces           v1.NamespaceInterface
@@ -127,6 +129,8 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 
 	pipelineEngine := engine.New(cluster, true)
 	pipelineExecutionLifecycle := &Lifecycle{
+		clusterName: clusterName,
+
 		systemAccountManager: systemaccount.NewManager(cluster.Management),
 		namespaces:           namespaces,
 		namespaceLister:      namespaceLister,
@@ -435,7 +439,7 @@ func (l *Lifecycle) doCleanup(obj *v3.PipelineExecution) error {
 	}
 	//Clean engine prepareRegistryCredentialForCurrentUser
 	reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
-	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(settings.PipelineDefaultRegistry.Get(), ""))
+	proceccedRegistry := strings.ToLower(reg.ReplaceAllString(settings.GetPipelineSetting(l.clusterName).DefaultRegistry, ""))
 	secretName := fmt.Sprintf("%s-%s-%s", obj.Namespace, proceccedRegistry, obj.Spec.TriggerUserName)
 	if err := l.secrets.DeleteNamespaced(ns, secretName, &metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsGone(err) {
 		return err

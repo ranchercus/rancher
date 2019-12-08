@@ -59,10 +59,12 @@ func configWithCloneStage(config *v3.PipelineConfig) *v3.PipelineConfig {
 		config.Stages[0].Steps[0].SourceCodeConfig != nil {
 		return result
 	}
+	//Author: Zac +
 	cloneStage := v3.Stage{
 		Name:  "Clone",
-		Steps: []v3.Step{{SourceCodeConfig: &v3.SourceCodeConfig{}}},
+		Steps: []v3.Step{{SourceCodeConfig: &v3.SourceCodeConfig{}}, {SourceCodeConfig: &v3.SourceCodeConfig{}}},
 	}
+	//Author: Zac -
 	result.Stages = append([]v3.Stage{cloneStage}, result.Stages...)
 	return result
 }

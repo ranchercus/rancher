@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/rancher/rancher/pkg/settings"
 	"math/rand"
 	"strconv"
 	"time"
@@ -138,7 +139,7 @@ func (l *Lifecycle) deploy(projectName string) error {
 		return errors.Wrapf(err, "Error creating the nginx proxy")
 	}
 
-	cbscm := getCallbackScriptConfigMap(nsName)
+	cbscm := getCallbackScriptConfigMap(nsName, l.clusterName)
 	if _, err := l.configMaps.Create(cbscm); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error creating the callback script config map")
 	}
@@ -940,11 +941,17 @@ func (l *Lifecycle) reconcileRegistryCredential(projectName, token string) error
 	return nil
 }
 
-func getCallbackScriptConfigMap(ns string) *corev1.ConfigMap {
-	return &corev1.ConfigMap {
+func getCallbackScriptConfigMap(ns, clusterName string) *corev1.ConfigMap {
+	cm := &corev1.ConfigMap {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      utils.CallbackScriptConfigMap,
 		},
 	}
+	if s := settings.GetPipelineSetting(clusterName); s != nil {
+		for _, v := range s.CallbackScripts {
+			cm.Data[v.Label] = v.Value
+		}
+	}
+	return cm
 }

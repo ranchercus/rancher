@@ -175,7 +175,7 @@ func (j *Engine) preparePipeline(execution *v3.PipelineExecution) error {
 					_, projectID := ref.Parse(execution.Spec.ProjectName)
 					registry = fmt.Sprintf("%s.%s-pipeline", utils.LocalRegistry, projectID)
 				}
-				if registry == settings.PipelineDefaultRegistry.Get() {
+				if registry == settings.GetPipelineSetting(j.ClusterName).DefaultRegistry {
 					if err := j.prepareRegistryCredentialForCurrentUser(execution, registry); err != nil {
 						return err
 					}
@@ -322,7 +322,7 @@ func (j *Engine) prepareRegistryCredentialForCurrentUser(execution *v3.PipelineE
 
 func (j *Engine) createPipelineJob(client *Client, execution *v3.PipelineExecution) error {
 	logrus.Debug("create jenkins job for pipeline")
-	converter, err := initJenkinsPipelineConverter(execution, j.PipelineSettingLister, j.SecretLister)
+	converter, err := initJenkinsPipelineConverter(execution, j.PipelineSettingLister, j.SecretLister, j.ClusterName)
 	if err != nil {
 		return err
 	}
@@ -332,12 +332,13 @@ func (j *Engine) createPipelineJob(client *Client, execution *v3.PipelineExecuti
 	}
 	jobName := getJobName(execution)
 	bconf, _ := xml.MarshalIndent(jobconf, "  ", "    ")
+	fmt.Println(string(bconf))
 	return client.createJob(jobName, bconf)
 }
 
 func (j *Engine) updatePipelineJob(client *Client, execution *v3.PipelineExecution) error {
 	logrus.Debug("update jenkins job for pipeline")
-	converter, err := initJenkinsPipelineConverter(execution, j.PipelineSettingLister, j.SecretLister)
+	converter, err := initJenkinsPipelineConverter(execution, j.PipelineSettingLister, j.SecretLister, j.ClusterName)
 	if err != nil {
 		return err
 	}

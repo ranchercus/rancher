@@ -274,12 +274,20 @@ func (m *manager) createMembershipRole(resourceType, roleName string, makeOwner 
 			ResourceNames: []string{metaObj.GetName()},
 			Verbs:         []string{"get"},
 		},
+		{
+			APIGroups:     []string{"management.cattle.io"},
+			Resources:     []string{"clustersettings"},
+			ResourceNames: []string{metaObj.GetName()},
+			Verbs:         []string{"get"},
+		},
 	}
 
 	if makeOwner {
 		rules[0].Verbs = []string{"*"}
+		rules[1].Verbs = []string{"*"}
 	} else {
 		rules[0].Verbs = []string{"get"}
+		rules[1].Verbs = []string{"get"}
 	}
 	logrus.Infof("[%v] Creating clusterRole %v", m.controller, roleName)
 	_, err = client.Create(&v1.ClusterRole{

@@ -25,6 +25,7 @@ import (
 type jenkinsPipelineConverter struct {
 	execution *v3.PipelineExecution
 	opts      *executeOptions
+	clusterName string
 }
 
 type executeOptions struct {
@@ -36,7 +37,7 @@ type executeOptions struct {
 	executorCPULimit      string
 }
 
-func initJenkinsPipelineConverter(execution *v3.PipelineExecution, pipelineSettingLister v3.PipelineSettingLister, secretLister apiv1.SecretLister) (*jenkinsPipelineConverter, error) {
+func initJenkinsPipelineConverter(execution *v3.PipelineExecution, pipelineSettingLister v3.PipelineSettingLister, secretLister apiv1.SecretLister, clusterName string) (*jenkinsPipelineConverter, error) {
 	_, projectID := ref.Parse(execution.Spec.ProjectName)
 	cacertSetting, err := pipelineSettingLister.Get(projectID, utils.SettingGitCaCerts)
 	if err != nil {
@@ -85,6 +86,7 @@ func initJenkinsPipelineConverter(execution *v3.PipelineExecution, pipelineSetti
 	return &jenkinsPipelineConverter{
 		execution: execution.DeepCopy(),
 		opts:      opts,
+		clusterName:clusterName,
 	}, nil
 }
 
@@ -127,6 +129,11 @@ func (c *jenkinsPipelineConverter) convertStep(stageOrdinal int, stepOrdinal int
 
 	command := c.getJenkinsStepCommand(stageOrdinal, stepOrdinal)
 
+	// Author: Zac +
+	if stageOrdinal == 0 {
+		return fmt.Sprintf(stepBlock2, stepName, stepName, command)
+	}
+	// Author: Zac -
 	return fmt.Sprintf(stepBlock, stepName, stepName, stepName, command)
 }
 
@@ -137,7 +144,13 @@ func (c *jenkinsPipelineConverter) convertStage(stageOrdinal int) string {
 	for i := range stage.Steps {
 		buffer.WriteString(c.convertStep(stageOrdinal, i))
 		if i != len(stage.Steps)-1 {
-			buffer.WriteString(",")
+			// Author: Zac +
+			if stageOrdinal != 0 {
+				buffer.WriteString(",")
+			} else {
+				buffer.WriteString("\n")
+			}
+			// Author: Zac -
 		}
 	}
 	skipOption := ""
@@ -145,6 +158,11 @@ func (c *jenkinsPipelineConverter) convertStage(stageOrdinal int) string {
 		skipOption = fmt.Sprintf(markSkipScript, stage.Name)
 	}
 
+	// Author: Zac +
+	if stageOrdinal == 0 {
+		return fmt.Sprintf(stageBlock2, stage.Name, buffer.String())
+	}
+	// Author: Zac -
 	return fmt.Sprintf(stageBlock, stage.Name, skipOption, buffer.String())
 }
 
@@ -235,15 +253,16 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 			},
 		},
 	}
-	if settings.PipelineDefaultRegistry.Get() != "" && settings.PipelineRegistryInsecure.Get() == "false" {
+	pipelineDefaultRegistry := settings.GetPipelineSetting(c.clusterName).DefaultRegistry
+	if pipelineDefaultRegistry != "" && !settings.GetPipelineSetting(c.clusterName).RegistryInsecure {
 		reg, _ := regexp.Compile("[^a-zA-Z0-9]+")
-		name := fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, strings.ToLower(reg.ReplaceAllString(settings.PipelineDefaultRegistry.Get(), "")))
+		name := fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, strings.ToLower(reg.ReplaceAllString(pipelineDefaultRegistry, "")))
 		pathType := v1.HostPathUnset
 		pod.Spec.Volumes = append(pod.Spec.Volumes, v1.Volume{
 			Name: name,
 			VolumeSource: v1.VolumeSource{
 				HostPath: &v1.HostPathVolumeSource{
-					Path: fmt.Sprintf("/etc/docker/certs.d/%s", settings.PipelineDefaultRegistry.Get()),
+					Path: fmt.Sprintf("/etc/docker/certs.d/%s", pipelineDefaultRegistry),
 					Type: &pathType,
 				},
 			},
@@ -265,7 +284,7 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 		})
 	}
 
-	if tostr := settings.PipelineNodeToleration.Get(); tostr != "" {
+	if tostr := settings.GetPipelineSetting(c.clusterName).NodeToleration; tostr != "" {
 		toinfo := strings.Split(tostr, ":")
 		if len(toinfo) != 4 {
 			goto lable
@@ -286,7 +305,7 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 		})
 	}
 
-	if selstr := settings.PipelineNodeSelector.Get(); selstr != "" {
+	if selstr := settings.GetPipelineSetting(c.clusterName).NodeSelector; selstr != "" {
 		selectors := strings.Split(selstr, ",")
 		for _, selector := range selectors {
 			kv := strings.Split(selector, ":")
@@ -299,7 +318,7 @@ func (c *jenkinsPipelineConverter) getBasePodTemplate() *v1.Pod {
 		}
 	}
 
-	if locstr := settings.PipelineLocalShare.Get(); locstr != "" {
+	if locstr := settings.GetPipelineSetting(c.clusterName).LocalShare; locstr != "" {
 		shares := strings.Split(locstr, ",")
 		for idx, share := range shares {
 			kv := strings.Split(share, ":")
@@ -523,3 +542,15 @@ timeout(%d) {
 }
 }
 }`
+// Author: Zac +
+const stageBlock2 = `stage('%s'){
+%s
+}
+`
+const stepBlock2 = `stage('%s'){
+container(name: '%s') {
+%s
+}
+}
+`
+// Author: Zac -

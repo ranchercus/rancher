@@ -23,6 +23,7 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/user/istio"
 	"github.com/rancher/rancher/pkg/controllers/user/logging"
 	"github.com/rancher/rancher/pkg/controllers/user/monitoring"
+	"github.com/rancher/rancher/pkg/controllers/user/project"
 	"github.com/rancher/rancher/pkg/controllers/user/networkpolicy"
 	"github.com/rancher/rancher/pkg/controllers/user/noderemove"
 	"github.com/rancher/rancher/pkg/controllers/user/nodesyncer"
@@ -67,6 +68,7 @@ func Register(ctx context.Context, cluster *config.UserContext, clusterRec *mana
 	globaldns.Register(ctx, cluster)
 	alert.Register(ctx, cluster)
 	monitoring.Register(ctx, cluster)
+	project.Register(ctx, cluster)
 	istio.Register(ctx, cluster)
 	certsexpiration.Register(ctx, cluster)
 	ingresshostgen.Register(ctx, cluster.UserOnlyContext())
