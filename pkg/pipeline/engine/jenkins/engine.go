@@ -332,7 +332,6 @@ func (j *Engine) createPipelineJob(client *Client, execution *v3.PipelineExecuti
 	}
 	jobName := getJobName(execution)
 	bconf, _ := xml.MarshalIndent(jobconf, "  ", "    ")
-	fmt.Println(string(bconf))
 	return client.createJob(jobName, bconf)
 }
 
