@@ -32,8 +32,14 @@ func (c *jenkinsPipelineConverter) getStepContainer(stageOrdinal int, stepOrdina
 				return container, err
 			}
 		} else {
-			if err := c.configChangeLogContainer(&container, step); err != nil {
-				return container, err
+			if settings.GetPipelineSetting(c.clusterName).SonarScanner != nil {
+				if err := c.configSonarStepContainer(&container, step); err != nil {
+					return container, err
+				}
+			} else {
+				if err := c.configChangeLogContainer(&container, step); err != nil {
+					return container, err
+				}
 			}
 		}
 		//Author: Zac -
@@ -53,11 +59,7 @@ func (c *jenkinsPipelineConverter) getStepContainer(stageOrdinal int, stepOrdina
 		if err := c.configApplyAppContainer(&container, step); err != nil {
 			return container, err
 		}
-	} else if step.SonarqubeConfig != nil { // Author: Zac +
-		if err := c.configSonarStepContainer(&container, step); err != nil {
-			return container, err
-		}
-	} // Author: Zac -
+	}
 
 	//common step configurations
 	for k, v := range utils.GetEnvVarMap(c.execution) {
@@ -106,6 +108,11 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		} else {
 			command = `sh ''' echo "Show Last 100 Git Change Logs"
 				git --no-pager log -100 --date=local --pretty='%cd[%cn]-%h: %s' ''' `
+			sonarScanner := settings.GetPipelineSetting(c.clusterName).SonarScanner
+			if sonarScanner != nil {
+				command = fmt.Sprintf(`%s
+                    %s`, command, "/sonar-scanner-init.sh")
+			}
 		}
 		// Author: Zac -
 	} else if step.RunScriptConfig != nil {
@@ -132,10 +139,7 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		command = `sh ''' publish-catalog '''`
 	} else if step.ApplyAppConfig != nil {
 		command = `sh ''' apply-app '''`
-	} else if step.SonarqubeConfig != nil { // Author: Zac +
-		command = `sh ''' /sonar-scanner-init.sh
-			sonar-scanner -X'''`
-	} // Author: Zac -
+	}
 	return command
 }
 
@@ -166,15 +170,19 @@ func (c *jenkinsPipelineConverter) configChangeLogContainer(container *v1.Contai
 	return injectResources(container, utils.PipelineToolsCPULimitDefault, utils.PipelineToolsCPURequestDefault, utils.PipelineToolsMemoryLimitDefault, utils.PipelineToolsMemoryRequestDefault)
 }
 func (c *jenkinsPipelineConverter) configSonarStepContainer(container *v1.Container, step *v3.Step) error {
-	config := step.SonarqubeConfig
-	config.Language = "go"
-	config.ProjectVersion = "1"
 	container.Image = "rancher/pipeline-sonar-scanner:1.0.2"
+
+	config := settings.GetPipelineSetting(c.clusterName).SonarScanner
 	envs := map[string]string{
-		"SONAR_TOKEN":  "e9a276956f784d399d51c4052e7b845e866e20f7",
-		"VERSION":      config.ProjectVersion,
-		"LANGUAGE":     config.Language,
-		"SONAR_HOST":	"http://10.2.10.40:30902/",
+		"SONAR_HOST_URL":        config.HostUrl,
+		"SONAR_LOGIN":           config.Login,
+		"SONAR_SOURCE_ENCODING": config.SourceEncoding,
+		"SONAR_PROJECT_KEY": "http://10.2.10.40:30902/",
+		"SONAR_PROJECT_NAME": "http://10.2.10.40:30902/",
+		"SONAR_PROJECT_VERSION": "http://10.2.10.40:30902/",
+		"SONAR_LANGUAGE": "http://10.2.10.40:30902/",
+		"SONAR_SOURCES": "http://10.2.10.40:30902/",
+		"SONAR_PROJECT_BASE_DIR": "http://10.2.10.40:30902/",
 	}
 	for k, v := range envs {
 		container.Env = append(container.Env, v1.EnvVar{Name: k, Value: v})

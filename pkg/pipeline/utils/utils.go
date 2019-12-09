@@ -117,8 +117,10 @@ func GenerateExecution(executions v3.PipelineExecutionInterface, pipeline *v3.Pi
 	execution.Spec.Ref = info.Ref
 	execution.Spec.Commit = info.Commit
 	execution.Spec.Event = info.Event
+	// Author: Zac +
 	execution.Spec.RunCallbackScript = info.RunCallbackScript
-
+	execution.Spec.RunCodeScanner = info.RunCodeScanner
+	// Author: Zac -
 	if info.RepositoryURL != "" {
 		execution.Spec.RepositoryURL = info.RepositoryURL
 	}
