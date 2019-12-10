@@ -3,6 +3,7 @@ package jenkins
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	images "github.com/rancher/rancher/pkg/image"
@@ -111,7 +112,7 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 			sonarScanner := settings.GetPipelineSetting(c.clusterName).SonarScanner
 			if sonarScanner != nil {
 				command = fmt.Sprintf(`%s
-                    %s`, command, "/sonar-scanner-init.sh")
+                    %s`, command[:len(command)-4], "/start-sonar-scanner.sh ''' ")
 			}
 		}
 		// Author: Zac -
@@ -173,21 +174,38 @@ func (c *jenkinsPipelineConverter) configSonarStepContainer(container *v1.Contai
 	container.Image = "rancher/pipeline-sonar-scanner:1.0.2"
 
 	config := settings.GetPipelineSetting(c.clusterName).SonarScanner
+
+	repoURL := c.execution.Spec.RepositoryURL
+	repoName := ""
+	orgName := ""
+	if strings.Contains(repoURL, "/") {
+		trimmedURL := strings.TrimRight(repoURL, "/")
+		idx := strings.LastIndex(trimmedURL, "/")
+		repoName = strings.TrimSuffix(trimmedURL[idx+1:], ".git")
+		trimmedURL = trimmedURL[:idx]
+		idx = strings.LastIndex(trimmedURL, "/")
+		orgName = trimmedURL[idx+1:]
+	}
+	cn := c.clusterName
+	if c.clusterName == "local" {
+		cn = "pre"
+	}
+	cn = strings.ToUpper(cn)
+	_, projectID := ref.Parse(c.execution.Spec.ProjectName)
+	pipelineNum := strconv.Itoa(c.execution.Spec.Run)
+	projectkey := fmt.Sprintf("%s:%s:%s:%s", projectID, orgName, repoName, pipelineNum)
+	projectName := fmt.Sprintf("%s:%s:%s-%s", orgName, repoName, cn, pipelineNum)
 	envs := map[string]string{
-		"SONAR_HOST_URL":        config.HostUrl,
-		"SONAR_LOGIN":           config.Login,
-		"SONAR_SOURCE_ENCODING": config.SourceEncoding,
-		"SONAR_PROJECT_KEY": "http://10.2.10.40:30902/",
-		"SONAR_PROJECT_NAME": "http://10.2.10.40:30902/",
-		"SONAR_PROJECT_VERSION": "http://10.2.10.40:30902/",
-		"SONAR_LANGUAGE": "http://10.2.10.40:30902/",
-		"SONAR_SOURCES": "http://10.2.10.40:30902/",
-		"SONAR_PROJECT_BASE_DIR": "http://10.2.10.40:30902/",
+		"SONAR_HOST_URL":           config.HostUrl,
+		"SONAR_LOGIN":              config.Login,
+		"SONAR_SOURCE_ENCODING":    config.SourceEncoding,
+		"SONAR_PROJECT_KEY":        projectkey,
+		"SONAR_PROJECT_PROPERTIES": fmt.Sprintf(sonarProjectProperties, projectkey, projectName, pipelineNum, ".", ".", "/usr/lib/jvm/java-1.8-openjdk/bin"),
 	}
 	for k, v := range envs {
 		container.Env = append(container.Env, v1.EnvVar{Name: k, Value: v})
 	}
-	return injectResources(container, utils.PipelineToolsCPULimitDefault, utils.PipelineToolsCPURequestDefault, utils.PipelineToolsMemoryLimitDefault, utils.PipelineToolsMemoryRequestDefault)
+	return injectResources(container, utils.StepCPULimitDefault, utils.StepCPURequestDefault, utils.StepMemoryLimitDefault, utils.StepMemoryRequestDefault)
 }
 //Author: Zac -
 
@@ -389,3 +407,11 @@ func (c *jenkinsPipelineConverter) configApplyAppContainer(container *v1.Contain
 		}}})
 	return injectResources(container, utils.PipelineToolsCPULimitDefault, utils.PipelineToolsCPURequestDefault, utils.PipelineToolsMemoryLimitDefault, utils.PipelineToolsMemoryRequestDefault)
 }
+// Author: Zac +
+var sonarProjectProperties = `sonar.projectKey=%s
+sonar.projectName=%s
+sonar.projectVersion=%s
+sonar.sources=%s
+sonar.projectBaseDir=%s
+sonar.java.binaries=%s`
+// Author: Zac -
