@@ -488,6 +488,7 @@ func NodeTypes(schemas *types.Schemas, management *config.ScaledContext) error {
 		NodeTemplateLister: ntl,
 	}
 	schema.Formatter = f.Formatter
+	schema.Validator = nodepool.Validator
 	return nil
 }
 
@@ -704,6 +705,8 @@ func KontainerDriver(schemas *types.Schemas, management *config.ScaledContext) {
 		ServiceOptions:       management.Management.RKEK8sServiceOptions(""),
 		AddonsLister:         management.Management.RKEAddons("").Controller().Lister(),
 		Addons:               management.Management.RKEAddons(""),
+		SettingLister:        management.Management.Settings("").Controller().Lister(),
+		Settings:             management.Management.Settings(""),
 	}
 	handler := kontainerdriver.ActionHandler{
 		KontainerDrivers:      management.Management.KontainerDrivers(""),
