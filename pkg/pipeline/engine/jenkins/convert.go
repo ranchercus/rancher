@@ -110,7 +110,7 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 			command = `sh ''' echo "Show Last 100 Git Change Logs"
 				git --no-pager log -100 --date=local --pretty='%cd[%cn]-%h: %s' ''' `
 			sonarScanner := settings.GetPipelineSetting(c.clusterName).SonarScanner
-			if sonarScanner != nil {
+			if sonarScanner != nil && c.execution.Spec.RunCodeScanner {
 				command = fmt.Sprintf(`%s
                     %s`, command[:len(command)-4], "/start-sonar-scanner.sh ''' ")
 			}
