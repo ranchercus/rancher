@@ -15,8 +15,8 @@ import (
 	"github.com/rancher/rancher/pkg/pipeline/remote/model"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
-	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
-	client "github.com/rancher/types/client/project/v3"
+	"github.com/rancher/types/apis/project.cattle.io/v3"
+	"github.com/rancher/types/client/project/v3"
 	"gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -39,8 +39,17 @@ type Handler struct {
 }
 
 func Formatter(apiContext *types.APIContext, resource *types.RawResource) {
-	resource.AddAction(apiContext, actionRun)
-	resource.AddAction(apiContext, actionPushConfig)
+	//Author: Zac +
+	revision := map[string]interface{}{
+		"id": resource.ID,
+	}
+	if err := apiContext.AccessControl.CanDo(v3.GroupName, v3.PipelineExecutionResource.Name, "update", apiContext, revision, apiContext.Schema); err == nil {
+		resource.AddAction(apiContext, actionRun)
+	}
+	if err := apiContext.AccessControl.CanDo(v3.GroupName, v3.PipelineResource.Name, "update", apiContext, revision, apiContext.Schema); err == nil {
+		resource.AddAction(apiContext, actionPushConfig)
+	}
+	//Author: Zac -
 	resource.Links[linkConfigs] = apiContext.URLBuilder.Link(linkConfigs, resource)
 	resource.Links[linkYaml] = apiContext.URLBuilder.Link(linkYaml, resource)
 	resource.Links[linkBranches] = apiContext.URLBuilder.Link(linkBranches, resource)

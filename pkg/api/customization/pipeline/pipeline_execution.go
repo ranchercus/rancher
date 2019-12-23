@@ -1,18 +1,18 @@
 package pipeline
 
 import (
+	"github.com/rancher/norman/types/convert"
 	"net/http"
 	"time"
 
 	"github.com/rancher/norman/api/access"
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/types"
-	"github.com/rancher/norman/types/convert"
 	"github.com/rancher/rancher/pkg/clustermanager"
 	"github.com/rancher/rancher/pkg/pipeline/utils"
 	"github.com/rancher/rancher/pkg/ref"
-	v3 "github.com/rancher/types/apis/project.cattle.io/v3"
-	client "github.com/rancher/types/client/project/v3"
+	"github.com/rancher/types/apis/project.cattle.io/v3"
+	"github.com/rancher/types/client/project/v3"
 )
 
 const (
@@ -31,12 +31,19 @@ type ExecutionHandler struct {
 }
 
 func (h *ExecutionHandler) ExecutionFormatter(apiContext *types.APIContext, resource *types.RawResource) {
-	if e := convert.ToString(resource.Values[executionStateField]); utils.IsFinishState(e) {
-		resource.AddAction(apiContext, actionRerun)
+	//Author: Zac +
+	revision := map[string]interface{}{
+		"id": resource.ID,
 	}
-	if e := convert.ToString(resource.Values[executionStateField]); !utils.IsFinishState(e) {
-		resource.AddAction(apiContext, actionStop)
+	if err := apiContext.AccessControl.CanDo(v3.GroupName, v3.PipelineExecutionResource.Name, "update", apiContext, revision, apiContext.Schema); err == nil {
+		if e := convert.ToString(resource.Values[executionStateField]); utils.IsFinishState(e) {
+			resource.AddAction(apiContext, actionRerun)
+		}
+		if e := convert.ToString(resource.Values[executionStateField]); !utils.IsFinishState(e) {
+			resource.AddAction(apiContext, actionStop)
+		}
 	}
+	//Author: Zac -
 	resource.Links[linkLog] = apiContext.URLBuilder.Link(linkLog, resource)
 }
 
