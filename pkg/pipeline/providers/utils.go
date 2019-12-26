@@ -37,7 +37,9 @@ func GetPipelineConfigByBranch(sourceCodeCredentials v3.SourceCodeCredentialInte
 	if err != nil {
 		return nil, err
 	}
-	content, err := remote.GetPipelineFileInRepo(repoURL, branch, accessToken)
+	//Author: Zac+
+	content, err := remote.GetPipelineFileInRepo(repoURL, branch, accessToken, pipeline.Spec.SubPath)
+	//Author: Zac-
 	if err != nil {
 		return nil, err
 	}

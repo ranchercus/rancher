@@ -106,6 +106,13 @@ func (c *jenkinsPipelineConverter) getJenkinsStepCommand(stageOrdinal int, stepO
 		if stepOrdinal == 0 {
 			command = fmt.Sprintf("checkout([$class: 'GitSCM', branches: [[name: 'local/temp']], userRemoteConfigs: [[url: '%s', refspec: '+%s:refs/remotes/local/temp', credentialsId: '%s']]])",
 				c.execution.Spec.RepositoryURL, c.execution.Spec.Ref, c.execution.Name)
+			if ctx := c.execution.Spec.BuildCxtPath; ctx != "" {
+				command = fmt.Sprintf(`%s
+                    sh '''mkdir -p /tmp/git-cache
+						ls -a ./%s | awk "NR>2{print}" | xargs -I {} mv ./%s/{} /tmp/git-cache
+						rm -rf *
+						ls -a /tmp/git-cache | awk "NR>2{print}" | xargs -I {} mv -f /tmp/git-cache/{} .'''`, command, ctx, ctx)
+			}
 		} else {
 			command = `sh ''' echo "Show Last 100 Git Change Logs"
 				git --no-pager log -100 --date=local --pretty='%cd[%cn]-%h: %s' ''' `

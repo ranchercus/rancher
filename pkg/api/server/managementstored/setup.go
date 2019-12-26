@@ -612,6 +612,9 @@ func Pipeline(schemas *types.Schemas, management *config.ScaledContext, clusterM
 		PipelineExecutions:         management.Project.PipelineExecutions(""),
 		SourceCodeCredentials:      management.Project.SourceCodeCredentials(""),
 		SourceCodeCredentialLister: management.Project.SourceCodeCredentials("").Controller().Lister(),
+		//Author: Zac +
+		PipelineInterface:          management.Project.Pipelines(""),
+		//Author: Zac -
 	}
 	schema := schemas.Schema(&projectschema.Version, projectclient.PipelineType)
 	schema.Formatter = pipeline.Formatter

@@ -274,16 +274,20 @@ func (c *client) getFileFromRepo(filename string, owner string, repo string, bra
 	url := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/raw/%s?at=%s", c.BaseURL, owner, repo, filename, branch)
 	return c.getFromBitbucket(url, accessToken)
 }
-
-func (c *client) GetPipelineFileInRepo(repoURL string, branch string, accessToken string) ([]byte, error) {
+//Author: Zac +
+func (c *client) GetPipelineFileInRepo(repoURL string, branch string, accessToken string, subPath ...string) ([]byte, error) {
 	owner, repo, err := getUserRepoFromURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
-	content, err := c.getFileFromRepo(utils.PipelineFileYaml, owner, repo, branch, accessToken)
+	path := ""
+	if len(subPath) != 0  && strings.TrimSpace(subPath[0]) != "" {
+		path = subPath[0] + "/"
+	}
+	content, err := c.getFileFromRepo(path + utils.PipelineFileYaml, owner, repo, branch, accessToken)
 	if err != nil {
 		//look for both suffix
-		content, err = c.getFileFromRepo(utils.PipelineFileYml, owner, repo, branch, accessToken)
+		content, err = c.getFileFromRepo(path + utils.PipelineFileYml, owner, repo, branch, accessToken)
 	}
 	if err != nil {
 		logrus.Debugf("error GetPipelineFileInRepo - %v", err)
@@ -292,26 +296,30 @@ func (c *client) GetPipelineFileInRepo(repoURL string, branch string, accessToke
 	return content, nil
 }
 
-func (c *client) SetPipelineFileInRepo(repoURL string, branch string, accessToken string, content []byte) error {
+func (c *client) SetPipelineFileInRepo(repoURL string, branch string, accessToken string, content []byte, subPath ...string) error {
 	owner, repo, err := getUserRepoFromURL(repoURL)
 	if err != nil {
 		return err
 	}
 
-	currentContent, err := c.getFileFromRepo(utils.PipelineFileYml, owner, repo, branch, accessToken)
-	currentFileName := utils.PipelineFileYml
+	path := ""
+	if len(subPath) != 0  && strings.TrimSpace(subPath[0]) != "" {
+		path = subPath[0] + "/"
+	}
+	currentContent, err := c.getFileFromRepo(path + utils.PipelineFileYml, owner, repo, branch, accessToken)
+	currentFileName := path + utils.PipelineFileYml
 	if err != nil {
 		if httpErr, ok := err.(*httperror.APIError); !ok || httpErr.Code.Status != http.StatusNotFound {
 			return err
 		}
 		//look for both suffix
-		currentContent, err = c.getFileFromRepo(utils.PipelineFileYaml, owner, repo, branch, accessToken)
+		currentContent, err = c.getFileFromRepo(path + utils.PipelineFileYaml, owner, repo, branch, accessToken)
 		if err != nil {
 			if httpErr, ok := err.(*httperror.APIError); !ok || httpErr.Code.Status != http.StatusNotFound {
 				return err
 			}
 		} else {
-			currentFileName = utils.PipelineFileYaml
+			currentFileName = path + utils.PipelineFileYaml
 		}
 	}
 
@@ -351,7 +359,7 @@ func (c *client) SetPipelineFileInRepo(repoURL string, branch string, accessToke
 	_, err = c.doRequestToBitbucket(http.MethodPut, apiurl, accessToken, header, &b)
 	return err
 }
-
+//Author: Zac -
 func (c *client) getFileLastCommit(owner string, repo string, branch string, fileName string, accessToken string) (string, error) {
 	url := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/last-modified?at=%s", c.BaseURL, owner, repo, branch)
 	b, err := c.getFromBitbucket(url, accessToken)

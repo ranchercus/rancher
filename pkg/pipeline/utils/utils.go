@@ -120,6 +120,7 @@ func GenerateExecution(executions v3.PipelineExecutionInterface, pipeline *v3.Pi
 	// Author: Zac +
 	execution.Spec.RunCallbackScript = info.RunCallbackScript
 	execution.Spec.RunCodeScanner = info.RunCodeScanner
+	execution.Spec.BuildCxtPath = pipeline.Spec.ContextPath
 	// Author: Zac -
 	if info.RepositoryURL != "" {
 		execution.Spec.RepositoryURL = info.RepositoryURL

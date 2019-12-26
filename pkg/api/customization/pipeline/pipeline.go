@@ -3,9 +3,6 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/api/access"
 	"github.com/rancher/norman/httperror"
@@ -18,17 +15,24 @@ import (
 	"github.com/rancher/types/apis/project.cattle.io/v3"
 	"github.com/rancher/types/client/project/v3"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
+	"net/http"
+	"strings"
 )
 
 const (
 	actionRun        = "run"
 	actionPushConfig = "pushconfig"
-	linkConfigs      = "configs"
-	linkYaml         = "yaml"
-	linkBranches     = "branches"
-	queryBranch      = "branch"
-	queryConfigs     = "configs"
+	// Author: Zac +
+	actionSub = "sub"
+	// Author: Zac -
+	linkConfigs  = "configs"
+	linkYaml     = "yaml"
+	linkBranches = "branches"
+	queryBranch  = "branch"
+	queryConfigs = "configs"
 )
 
 type Handler struct {
@@ -36,6 +40,9 @@ type Handler struct {
 	PipelineExecutions         v3.PipelineExecutionInterface
 	SourceCodeCredentialLister v3.SourceCodeCredentialLister
 	SourceCodeCredentials      v3.SourceCodeCredentialInterface
+	//Author: Zac +
+	PipelineInterface v3.PipelineInterface
+	//Author: Zac -
 }
 
 func Formatter(apiContext *types.APIContext, resource *types.RawResource) {
@@ -48,6 +55,7 @@ func Formatter(apiContext *types.APIContext, resource *types.RawResource) {
 	}
 	if err := apiContext.AccessControl.CanDo(v3.GroupName, v3.PipelineResource.Name, "update", apiContext, revision, apiContext.Schema); err == nil {
 		resource.AddAction(apiContext, actionPushConfig)
+		resource.AddAction(apiContext, actionSub)
 	}
 	//Author: Zac -
 	resource.Links[linkConfigs] = apiContext.URLBuilder.Link(linkConfigs, resource)
@@ -76,6 +84,10 @@ func (h *Handler) ActionHandler(actionName string, action *types.Action, apiCont
 		return h.run(apiContext)
 	case actionPushConfig:
 		return h.pushConfig(apiContext)
+	// Author: Zac +
+	case actionSub:
+		return h.subPipeline(apiContext)
+		// Author: Zac -
 	}
 	return httperror.NewAPIError(httperror.InvalidAction, "unsupported action")
 }
@@ -193,7 +205,9 @@ func (h *Handler) pushConfig(apiContext *types.APIContext) error {
 		if err != nil {
 			return err
 		}
-		if err := remote.SetPipelineFileInRepo(pipeline.Spec.RepositoryURL, branch, accessToken, content); err != nil {
+		//Author: Zac+
+		if err := remote.SetPipelineFileInRepo(pipeline.Spec.RepositoryURL, branch, accessToken, content, pipeline.Spec.SubPath); err != nil {
+			//Author: Zac-
 			if apierr, ok := err.(*httperror.APIError); ok && apierr.Code.Status == http.StatusNotFound {
 				//github returns 404 for unauth request to prevent leakage of private repos
 				return httperror.NewAPIError(httperror.Unauthorized, "current git account is unauthorized for the action")
@@ -426,7 +440,9 @@ func (h *Handler) updatePipelineConfigYaml(apiContext *types.APIContext) error {
 		return err
 	}
 
-	if err := remote.SetPipelineFileInRepo(pipeline.Spec.RepositoryURL, branch, accessToken, content); err != nil {
+	//Author: Zac+
+	if err := remote.SetPipelineFileInRepo(pipeline.Spec.RepositoryURL, branch, accessToken, content, pipeline.Spec.SubPath); err != nil {
+		//Author: Zac-
 		if apierr, ok := err.(*httperror.APIError); ok && apierr.Code.Status == http.StatusNotFound {
 			//github returns 404 for unauth request to prevent leakage of private repos
 			return httperror.NewAPIError(httperror.Unauthorized, "current git account is unauthorized for the action")
@@ -467,7 +483,9 @@ func (h *Handler) getPipelineConfigs(pipeline *v3.Pipeline, branch string) (map[
 	m := map[string]*v3.PipelineConfig{}
 
 	if branch != "" {
-		content, err := remote.GetPipelineFileInRepo(pipeline.Spec.RepositoryURL, branch, accessToken)
+		//Author: Zac+
+		content, err := remote.GetPipelineFileInRepo(pipeline.Spec.RepositoryURL, branch, accessToken, pipeline.Spec.SubPath)
+		//Author: Zac-
 		if err != nil {
 			return nil, err
 		}
@@ -487,7 +505,9 @@ func (h *Handler) getPipelineConfigs(pipeline *v3.Pipeline, branch string) (map[
 			return nil, err
 		}
 		for _, b := range branches {
-			content, err := remote.GetPipelineFileInRepo(pipeline.Spec.RepositoryURL, b, accessToken)
+			//Author: Zac+
+			content, err := remote.GetPipelineFileInRepo(pipeline.Spec.RepositoryURL, b, accessToken, pipeline.Spec.SubPath)
+			//Author: Zac-
 			if err != nil {
 				return nil, err
 			}
@@ -505,3 +525,87 @@ func (h *Handler) getPipelineConfigs(pipeline *v3.Pipeline, branch string) (map[
 
 	return m, nil
 }
+
+// Author: Zac +
+func (h *Handler) subPipeline(apiContext *types.APIContext) error {
+	ns, name := ref.Parse(apiContext.ID)
+	pipeline, err := h.PipelineLister.Get(ns, name)
+	if err != nil {
+		return err
+	}
+	subPipelineInput := v3.SubPipelineInput{}
+	requestBytes, err := ioutil.ReadAll(apiContext.Request.Body)
+	if err != nil {
+		return err
+	}
+	if string(requestBytes) != "" {
+		if err := json.Unmarshal(requestBytes, &subPipelineInput); err != nil {
+			return err
+		}
+	}
+	userName := apiContext.Request.Header.Get("Impersonate-User")
+	subPath := strings.TrimSpace(subPipelineInput.SubPath)
+	if len(subPath) > 0 {
+		if subPath[:1] == "/" {
+			subPath = subPath[1:]
+		}
+	} else {
+		apiContext.Response.Write([]byte(pipeline.Name))
+		return nil
+	}
+	contextPath := strings.TrimSpace(subPipelineInput.ContextPath)
+	if len(contextPath) > 0 && contextPath[:1] == "/" {
+		contextPath = contextPath[1:]
+	}
+
+	requirement1, err := labels.NewRequirement("cattle.io/parent-pipeline", selection.Equals, []string{pipeline.Name})
+	if err != nil {
+		return err
+	}
+	requirement2, err := labels.NewRequirement("cattle.io/pipeline-sub-path", selection.Equals, []string{subPath})
+	if err != nil {
+		return err
+	}
+	selector := labels.NewSelector()
+	selector = selector.Add(*requirement1, *requirement2)
+	pipelines, err := h.PipelineLister.List(ns, selector)
+	if err != nil {
+		return err
+	}
+	if len(pipelines) != 0 {
+		apiContext.Response.Write([]byte(pipelines[0].Name))
+		return nil
+	}
+
+	subPipeline := &v3.Pipeline{}
+	pipelineId := types.GenerateName("pipeline")
+	subPipeline.Name = pipelineId
+	subPipeline.Namespace = pipeline.Namespace
+	subPipeline.Labels = map[string]string{
+		"cattle.io/creator":           "norman",
+		"cattle.io/parent-pipeline":   pipeline.Name,
+		"cattle.io/pipeline-sub-path": subPath,
+	}
+	subPipeline.Annotations = map[string]string{
+		"field.cattle.io/creatorId":                            userName,
+		"lifecycle.cattle.io/create.pipeline-controller_local": "true",
+	}
+	subPipeline.ClusterName = pipeline.ClusterName
+	subPipeline.Spec.ProjectName = pipeline.Spec.ProjectName
+	subPipeline.Spec.DisplayName = pipeline.Spec.DisplayName
+	subPipeline.Spec.TriggerWebhookPush = false
+	subPipeline.Spec.TriggerWebhookPr = false
+	subPipeline.Spec.TriggerWebhookTag = false
+	subPipeline.Spec.RepositoryURL = pipeline.Spec.RepositoryURL
+	subPipeline.Spec.SourceCodeCredentialName = pipeline.Spec.SourceCodeCredentialName
+	subPipeline.Spec.SubPath = subPath
+	subPipeline.Spec.ContextPath = contextPath
+	_, err = h.PipelineInterface.Create(subPipeline)
+	if err != nil {
+		return err
+	}
+	apiContext.Response.Write([]byte(pipelineId))
+	return err
+}
+
+// Author: Zac -
