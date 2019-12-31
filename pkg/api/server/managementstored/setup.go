@@ -207,6 +207,9 @@ func Setup(ctx context.Context, apiContext *config.ScaledContext, clusterManager
 	multiclusterapp.SetMemberStore(ctx, schemas.Schema(&managementschema.Version, client.MultiClusterAppType), apiContext)
 	GlobalDNSProvidersPwdWrap(schemas, apiContext, localClusterEnabled)
 
+	//Author: Zac+
+	roletemplatebinding.SetStore(schemas.Schema(&managementschema.Version, client.ProjectRoleTemplateBindingType), apiContext)
+	//Author: Zac-
 	return nil
 }
 

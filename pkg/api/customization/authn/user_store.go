@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"github.com/rancher/rancher/pkg/harbor"
 	"strings"
 	"sync"
 	"time"
@@ -156,6 +157,11 @@ Tries:
 
 	delete(created, client.UserFieldPassword)
 
+	//Author: Zac+
+	username, _ := created[client.UserFieldUsername].(string)
+	displayName, _ := created[client.UserFieldName].(string)
+	go harbor.SyncAddUser(apiContext, username, displayName)
+	//Author: Zac-
 	return created, nil
 }
 
@@ -207,7 +213,14 @@ func (s *userStore) Delete(apiContext *types.APIContext, schema *types.Schema, i
 		return nil, httperror.NewAPIError(httperror.InvalidAction, "You cannot delete yourself")
 	}
 
-	return s.Store.Delete(apiContext, schema, id)
+	//return s.Store.Delete(apiContext, schema, id) Author: Zac+
+	deleted, err := s.Store.Delete(apiContext, schema, id)
+	if err == nil {
+		username, _ := deleted[client.UserFieldUsername].(string)
+		go harbor.SyncRemoveUser(apiContext, username)
+	}
+	return deleted, err
+	//Author: Zac-
 }
 
 func getUser(apiContext *types.APIContext) (string, error) {

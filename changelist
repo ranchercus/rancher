@@ -12,7 +12,6 @@ pkg/api/store/namespace/store.go
 pkg/api/server/managementstored/setup.go
 pkg/controllers/user/controllers.go
 pkg/api/controllers/settings/settings.go
-pkg/settings/customsetting.go
 pkg/controllers/user/pipeline/controller/pipelineexecution/statesyncer.go
 pkg/api/controllers/settings/clustersettings.go
 pkg/controllers/management/auth/manager.go
@@ -22,3 +21,9 @@ pkg/pipeline/remote/github/github.go
 pkg/pipeline/remote/gitlab/gitlab.go
 pkg/pipeline/remote/model/remote.go
 pkg/pipeline/providers/utils.go
+pkg/harbor/client.go
+pkg/harbor/harbor.go
+pkg/harbor/types.go
+pkg/api/customization/authn/user_store.go
+pkg/settings/custom_setting.go
+pkg/api/customization/roletemplatebinding/store.go
