@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/rancher/rancher/pkg/harbor"
 	"net/http"
 
 	"github.com/rancher/norman/api/builtin"
@@ -50,6 +51,9 @@ func New(ctx context.Context, scaledContext *config.ScaledContext, clusterManage
 	whitelistproxyKontainerDriver.Register(ctx, scaledContext)
 	samlconfig.Register(ctx, scaledContext)
 	usercontrollers.Register(ctx, scaledContext, clusterManager)
+	//Author: Zac+
+	harbor.Setup(scaledContext)
+	//Author: Zac-
 	err = settings.Register(scaledContext)
 
 	return server, err

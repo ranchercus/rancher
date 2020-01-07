@@ -76,7 +76,7 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 }
 
 func (p *projectLifecycle) Create(obj *v3.Project) (runtime.Object, error) {
-	if settings.SystemDefaultRegistry.Get() != "" {
+	if psetting :=settings.GetPipelineSetting(obj.Spec.ClusterName); psetting != nil && psetting.DefaultRegistry != "" {
 		return nil, p.syncDefaultRegistryCredential(obj)
 	}
 	return nil, nil
@@ -108,8 +108,11 @@ func (p *projectLifecycle) syncDefaultRegistryCredential(obj *v3.Project) error 
 		logrus.Warningf("warning generate random token got - %v, use default instead", err)
 		token = utils.PipelineSecretDefaultToken
 	}
-
-	defaultDockerCredential, err := p.getDefaultRegistryCredential(projectId, token, settings.SystemDefaultRegistry.Get())
+	defaultRegistry := ""
+	if psetting :=settings.GetPipelineSetting(obj.Spec.ClusterName); psetting != nil {
+		defaultRegistry = psetting.DefaultRegistry
+	}
+	defaultDockerCredential, err := p.getDefaultRegistryCredential(projectId, token, defaultRegistry)
 	if err != nil {
 		return err
 	}
@@ -196,7 +199,7 @@ func (p *projectLifecycle) getProjectUser(userId, projectName, token, displayNam
 }
 
 func (p *projectLifecycle) checkAndAdjust(syncInterval time.Duration, clusterName string) {
-	if settings.SystemDefaultRegistry.Get() == "" {
+	if psetting :=settings.GetPipelineSetting(clusterName); psetting == nil || psetting.DefaultRegistry == "" {
 		return
 	}
 	for range ticker.Context(p.ctx, syncInterval) {

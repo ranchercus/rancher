@@ -23,8 +23,14 @@ type User struct {
 	Password string `json:"password"`
 }
 
+type Metadata struct {
+	Public string `json:"public"`
+}
+
 type Project struct {
-	ProjectId int `json:"project_id"`
+	ProjectId   int      `json:"project_id,omitempty"`
+	ProjectName string   `json:"project_name"`
+	Metadata    Metadata `json:"metadata"`
 }
 
 type ProjectMember struct {

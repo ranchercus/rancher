@@ -87,12 +87,17 @@ func (l *Lifecycle) deploy(projectName string) error {
 		return errors.Wrapf(err, "Error creating a pipeline secret")
 	}
 
-	if err := l.reconcileRegistryCASecret(clusterID); err != nil {
-		return err
+	//Author: Zac+
+	psetting := settings.GetPipelineSetting(l.clusterName)
+	if psetting == nil || psetting.EnableLocalRegistry {
+		if err := l.reconcileRegistryCASecret(clusterID); err != nil {
+			return err
+		}
+		if err := l.reconcileRegistryCrtSecret(clusterID, projectID); err != nil {
+			return err
+		}
 	}
-	if err := l.reconcileRegistryCrtSecret(clusterID, projectID); err != nil {
-		return err
-	}
+	//Author: Zac-
 
 	sa := getServiceAccount(nsName)
 	if _, err := l.serviceAccounts.Create(sa); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -110,14 +115,18 @@ func (l *Lifecycle) deploy(projectName string) error {
 	if _, err := l.deployments.Create(jenkinsDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error creating the jenkins deployment")
 	}
-	registryService := getRegistryService(nsName)
-	if _, err := l.services.Create(registryService); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error creating the registry service")
+	//Author: Zac+
+	if psetting == nil || psetting.EnableLocalRegistry {
+		registryService := getRegistryService(nsName)
+		if _, err := l.services.Create(registryService); err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "Error creating the registry service")
+		}
+		registryDeployment := GetRegistryDeployment(nsName)
+		if _, err := l.deployments.Create(registryDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "Error creating the registry deployment")
+		}
 	}
-	registryDeployment := GetRegistryDeployment(nsName)
-	if _, err := l.deployments.Create(registryDeployment); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error creating the registry deployment")
-	}
+	//Author: Zac-
 	minioService := getMinioService(nsName)
 	if _, err := l.services.Create(minioService); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error creating the minio service")
@@ -130,19 +139,24 @@ func (l *Lifecycle) deploy(projectName string) error {
 	if err := l.reconcileProxyConfigMap(projectID); err != nil {
 		return err
 	}
+	//Author: Zac+
 	//docker credential for local registry
-	if err := l.reconcileRegistryCredential(projectName, token); err != nil {
-		return err
-	}
-	nginxDaemonset := getProxyDaemonset()
-	if _, err := l.daemonsets.Create(nginxDaemonset); err != nil && !apierrors.IsAlreadyExists(err) {
-		return errors.Wrapf(err, "Error creating the nginx proxy")
+	if psetting == nil || psetting.EnableLocalRegistry {
+		if err := l.reconcileRegistryCredential(projectName, token); err != nil {
+			return err
+		}
+
+		nginxDaemonset := getProxyDaemonset()
+		if _, err := l.daemonsets.Create(nginxDaemonset); err != nil && !apierrors.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "Error creating the nginx proxy")
+		}
 	}
 
 	cbscm := getCallbackScriptConfigMap(nsName, l.clusterName)
 	if _, err := l.configMaps.Create(cbscm); err != nil && !apierrors.IsAlreadyExists(err) {
 		return errors.Wrapf(err, "Error creating the callback script config map")
 	}
+	//Author: Zac-
 
 	return l.reconcileRb(projectName)
 }
@@ -940,18 +954,20 @@ func (l *Lifecycle) reconcileRegistryCredential(projectName, token string) error
 	}
 	return nil
 }
-
+//Author: Zac+
 func getCallbackScriptConfigMap(ns, clusterName string) *corev1.ConfigMap {
 	cm := &corev1.ConfigMap {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      utils.CallbackScriptConfigMap,
 		},
+		Data: map[string]string{},
 	}
 	if s := settings.GetPipelineSetting(clusterName); s != nil {
 		for _, v := range s.CallbackScripts {
-			cm.Data[v.Label] = v.Value
+			cm.Data[v.Label] = v.Script
 		}
 	}
 	return cm
 }
+//Author: Zac-

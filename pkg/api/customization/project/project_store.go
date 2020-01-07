@@ -2,7 +2,11 @@ package project
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/rancher/rancher/pkg/harbor"
+	"github.com/rancher/rancher/pkg/ref"
+	"k8s.io/client-go/tools/cache"
 	"strings"
 
 	"github.com/mitchellh/mapstructure"
@@ -19,11 +23,15 @@ import (
 	"github.com/rancher/types/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"github.com/rancher/types/client/management/v3"
 )
 
 const roleTemplatesRequired = "authz.management.cattle.io/creator-role-bindings"
 const quotaField = "resourceQuota"
 const namespaceQuotaField = "namespaceDefaultResourceQuota"
+//Auhtor: Zac+
+const projectByNameIndex = "auth.management.cattle.io/project-by-name"
+//Author: Zac-
 
 type projectStore struct {
 	types.Store
@@ -31,20 +39,45 @@ type projectStore struct {
 	roleTemplateLister v3.RoleTemplateLister
 	scaledContext      *config.ScaledContext
 	clusterLister      v3.ClusterLister
+	//Auhtor: Zac+
+	projectIndexer     cache.Indexer
+	//Auhtor: Zac-
 }
 
 func SetProjectStore(schema *types.Schema, mgmt *config.ScaledContext) {
+	//Auhtor: Zac+
+	projectIndexer := map[string]cache.IndexFunc{
+		projectByNameIndex: func(obj interface{}) ([]string, error) {
+			p, ok := obj.(*v3.Project)
+			if !ok {
+				return []string{}, nil
+			}
+
+			return []string{p.Spec.DisplayName}, nil
+		},
+	}
+	mgmt.Management.Projects("").Controller().Informer().AddIndexers(projectIndexer)
+	//Auhtor: Zac-
 	store := &projectStore{
 		Store:              schema.Store,
 		projectLister:      mgmt.Management.Projects("").Controller().Lister(),
 		roleTemplateLister: mgmt.Management.RoleTemplates("").Controller().Lister(),
 		scaledContext:      mgmt,
 		clusterLister:      mgmt.Management.Clusters("").Controller().Lister(),
+		//Auhtor: Zac+
+		projectIndexer:     mgmt.Management.Projects("").Controller().Informer().GetIndexer(),
+		//Auhtor: Zac-
 	}
 	schema.Store = store
 }
 
 func (s *projectStore) Create(apiContext *types.APIContext, schema *types.Schema, data map[string]interface{}) (map[string]interface{}, error) {
+	//Author: Zac+
+	err := s.validateDisplayName(data, "")
+	if err != nil {
+		return nil, err
+	}
+	//Author: Zac-
 	annotation, err := s.createProjectAnnotation()
 	if err != nil {
 		return nil, err
@@ -56,10 +89,30 @@ func (s *projectStore) Create(apiContext *types.APIContext, schema *types.Schema
 
 	values.PutValue(data, annotation, "annotations", roleTemplatesRequired)
 
-	return s.Store.Create(apiContext, schema, data)
+	//return s.Store.Create(apiContext, schema, data) Author: Zac+
+	created, err := s.Store.Create(apiContext, schema, data)
+	if err == nil {
+		name, _ := created[client.ProjectFieldName].(string)
+		clusterId, _ := created[client.ProjectFieldClusterID].(string)
+		id, _ := created["id"].(string)
+		go func() {
+			harbor.SyncAddProject(apiContext, name, clusterId)
+			_, n := ref.Parse(id)
+			harbor.SyncAddUser(apiContext, n, name)
+			harbor.SyncAddProjectMember(apiContext, name, n, "", clusterId)
+		}()
+	}
+	return created, err
+	//Author: Zac -
 }
 
 func (s *projectStore) Update(apiContext *types.APIContext, schema *types.Schema, data map[string]interface{}, id string) (map[string]interface{}, error) {
+	//Author: Zac+
+	err := s.validateDisplayName(data, apiContext.ID)
+	if err != nil {
+		return nil, err
+	}
+	//Author: Zac-
 	if err := s.validateResourceQuota(apiContext, data, id); err != nil {
 		return nil, err
 	}
@@ -77,7 +130,20 @@ func (s *projectStore) Delete(apiContext *types.APIContext, schema *types.Schema
 	if proj.Labels["authz.management.cattle.io/system-project"] == "true" {
 		return nil, httperror.NewAPIError(httperror.MethodNotAllowed, "System Project cannot be deleted")
 	}
-	return s.Store.Delete(apiContext, schema, id)
+	//return s.Store.Delete(apiContext, schema, id) Author: Zac+
+	deleted, err := s.Store.Delete(apiContext, schema, id)
+	if err == nil {
+		name, _ := deleted[client.ProjectFieldName].(string)
+		clusterId, _ := deleted[client.ProjectFieldClusterID].(string)
+		id, _ := deleted["id"].(string)
+		go func() {
+			harbor.SyncDeleteProject(apiContext, name, clusterId)
+			_, n := ref.Parse(id)
+			harbor.SyncRemoveUser(apiContext, n)
+		}()
+	}
+	return deleted, err
+	//Author: Zac-
 }
 
 func (s *projectStore) createProjectAnnotation() (string, error) {
@@ -310,3 +376,30 @@ func limitToLimit(from *mgmtclient.ResourceQuotaLimit) (*v3.ResourceQuotaLimit, 
 	err := convert.ToObj(from, &to)
 	return &to, err
 }
+//Author: Zac+
+func (s *projectStore) validateDisplayName(data map[string]interface{}, id string) error {
+	name, _ := data[client.ProjectFieldName].(string)
+	clusterId, _ := data[client.ProjectFieldClusterID].(string)
+	projects, err := s.projectIndexer.ByIndex(projectByNameIndex, name)
+	if err == nil {
+		exist := false
+		for _, v := range projects {
+			if project, ok := v.(*v3.Project); ok && project != nil && project.Spec.ClusterName == clusterId {
+				if id != "" {
+					_, n := ref.Parse(id)
+					p, err := s.projectLister.Get(clusterId, n)
+					if err == nil && p.Spec.DisplayName == name {
+						break
+					}
+				}
+				exist = true
+				break
+			}
+		}
+		if exist {
+			return errors.New("dubplicate project name")
+		}
+	}
+	return nil
+}
+//Author: Zac-

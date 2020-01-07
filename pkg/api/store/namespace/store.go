@@ -49,6 +49,7 @@ func (p *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 		values.PutValue(data, "{\"conditions\": [{\"type\": \"InitialRolesPopulated\", \"status\": \"Unknown\", \"message\": \"Populating initial roles\"}]}",
 			"annotations", "cattle.io/status")
 	}
+	//Author: Zac+
 	projectId := data["projectId"]
 	pname := ""
 	if projectId != nil && projectId != "" {
@@ -63,6 +64,7 @@ func (p *Store) Create(apiContext *types.APIContext, schema *types.Schema, data 
 		pname = fmt.Sprintf("%s-", pname)
 	}
 	data["name"] = fmt.Sprintf("%s%s", pname, data["name"])
+	//Author: Zac-
 	if err := p.validateResourceQuota(apiContext, schema, data, "", false); err != nil {
 		return nil, err
 	}

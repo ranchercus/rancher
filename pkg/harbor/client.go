@@ -113,7 +113,50 @@ func (c *Client) deleteUser(auth Auth, username string) error {
 	}
 	defer resp.Body.Close()
 
-	return checkHTTPError(resp, "create credential")
+	return checkHTTPError(resp, "delete harbor user")
+}
+
+func (c *Client) createProject(auth Auth, content []byte) error {
+	projectURL, err := url.Parse(c.Host + ProjectAPIURL)
+	if err != nil {
+		return err
+	}
+	req, _ := http.NewRequest(http.MethodPost, projectURL.String(), bytes.NewReader(content))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(auth.User, auth.Token)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return checkHTTPError(resp, "create harbor project")
+}
+
+func (c *Client) deleteProject(auth Auth, projectName string) error {
+	project, err := c.getProject(auth, projectName)
+	if err != nil {
+		return err
+	}
+	if project == nil {
+		return nil
+	}
+	projectURL, err := url.Parse(fmt.Sprintf("%s%s/%d", c.Host, ProjectAPIURL, project.ProjectId))
+	if err != nil {
+		return err
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, projectURL.String(), nil)
+	req.SetBasicAuth(auth.User, auth.Token)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return checkHTTPError(resp, "delete harbor project")
 }
 
 func (c *Client) getProject(auth Auth, name string) (*Project, error) {
