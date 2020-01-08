@@ -87,17 +87,12 @@ func (l *Lifecycle) deploy(projectName string) error {
 		return errors.Wrapf(err, "Error creating a pipeline secret")
 	}
 
-	//Author: Zac+
-	psetting := settings.GetPipelineSetting(l.clusterName)
-	if psetting == nil || psetting.EnableLocalRegistry {
-		if err := l.reconcileRegistryCASecret(clusterID); err != nil {
-			return err
-		}
-		if err := l.reconcileRegistryCrtSecret(clusterID, projectID); err != nil {
-			return err
-		}
+	if err := l.reconcileRegistryCASecret(clusterID); err != nil {
+		return err
 	}
-	//Author: Zac-
+	if err := l.reconcileRegistryCrtSecret(clusterID, projectID); err != nil {
+		return err
+	}
 
 	sa := getServiceAccount(nsName)
 	if _, err := l.serviceAccounts.Create(sa); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -116,6 +111,7 @@ func (l *Lifecycle) deploy(projectName string) error {
 		return errors.Wrapf(err, "Error creating the jenkins deployment")
 	}
 	//Author: Zac+
+	psetting := settings.GetPipelineSetting(l.clusterName)
 	if psetting == nil || psetting.EnableLocalRegistry {
 		registryService := getRegistryService(nsName)
 		if _, err := l.services.Create(registryService); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -965,7 +961,7 @@ func getCallbackScriptConfigMap(ns, clusterName string) *corev1.ConfigMap {
 	}
 	if s := settings.GetPipelineSetting(clusterName); s != nil {
 		for _, v := range s.CallbackScripts {
-			cm.Data[v.Label] = v.Script
+			cm.Data[v.Value] = v.Script
 		}
 	}
 	return cm
