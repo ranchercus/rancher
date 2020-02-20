@@ -502,6 +502,11 @@ func parsePreservedEnvVar(execution *v3.PipelineExecution) {
 			for k, v := range step.Env {
 				step.Env[k] = substituteEnvVar(m, v)
 			}
+			//Author: Zac+
+			for k, v := range pipelineConfig.Env {
+				step.Env[k] = v
+			}
+			//Author: Zac-
 		}
 	}
 }
