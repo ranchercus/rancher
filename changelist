@@ -32,3 +32,4 @@ pkg/api/server/server.go
 pkg/api/store/pipelinetemplate/store.go
 app/app.go
 app/clustersetting.go
+app/role_data.go
