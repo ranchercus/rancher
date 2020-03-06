@@ -2,6 +2,10 @@ package userstored
 
 import (
 	"context"
+	"fmt"
+	harborcustom "github.com/rancher/rancher/pkg/api/customization/harbor"
+	harborclient "github.com/rancher/rancher/pkg/harbor"
+	"github.com/rancher/rancher/pkg/api/store/harbor"
 	"net/http"
 	"time"
 
@@ -76,6 +80,9 @@ func Setup(ctx context.Context, mgmt *config.ScaledContext, clusterManager *clus
 	StorageClass(schemas)
 	PersistentVolumeClaim(clusterManager, schemas)
 
+	//Author: Zac+
+	Harbor(ctx, schemas, mgmt)
+	//Author: Zac-
 	return nil
 }
 
@@ -174,3 +181,34 @@ func HPA(schemas *types.Schemas, manager *clustermanager.Manager) {
 	schema.Store = nocondition.NewWrapper("initializing", "")(schema.Store)
 	schema.Store = hpa.NewIgnoreTransitioningErrorStore(schema.Store, 60*time.Second, "initializing")
 }
+
+//Author: Zac+
+func Harbor(ctx context.Context, schemas *types.Schemas, mgmt *config.ScaledContext) {
+	addProxyStore(ctx, schemas, mgmt, clusterClient.HarborProjectType, fmt.Sprintf("%s/%s", clusterschema.Version.Group, clusterschema.Version.Version), nil)
+	addProxyStore(ctx, schemas, mgmt, clusterClient.HarborRepositoryType, fmt.Sprintf("%s/%s", clusterschema.Version.Group, clusterschema.Version.Version), nil)
+	addProxyStore(ctx, schemas, mgmt, clusterClient.HarborTagType, fmt.Sprintf("%s/%s", clusterschema.Version.Group, clusterschema.Version.Version), nil)
+
+	proxyClient := harborclient.NewHarborProxy(ctx, mgmt)
+
+	harborTypes := map[string]func(types.Store, *types.Schema) types.Store{
+		clusterClient.HarborProjectType: func(store types.Store, s *types.Schema) types.Store {
+			s.Formatter = harborcustom.ProjectFormatter
+			return harbor.WrapProjectStore(store, mgmt, proxyClient)
+		},
+		clusterClient.HarborRepositoryType: func(store types.Store, s *types.Schema) types.Store {
+			return harbor.WrapRepositoryStore(store, mgmt, proxyClient)
+		},
+		clusterClient.HarborTagType: func(store types.Store, s *types.Schema) types.Store {
+			s.Formatter = harborcustom.TagFormatter
+			return harbor.WrapTagStore(store, mgmt, proxyClient)
+		},
+	}
+	for t, c := range harborTypes {
+		schema := schemas.Schema(&clusterschema.Version, t)
+		store := &crd.ForgetCRDNotFoundStore{
+			Store: schema.Store,
+		}
+		schema.Store = c(store, schema)
+	}
+}
+//Author: Zac-
