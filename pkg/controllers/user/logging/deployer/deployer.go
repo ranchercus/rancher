@@ -53,17 +53,34 @@ func NewDeployer(cluster *config.UserContext, secretSyncer *configsyncer.SecretM
 		PodLister:  cluster.Core.Pods(metav1.NamespaceAll).Controller().Lister(),
 	}
 
-	return &Deployer{
-		clusterName:          clusterName,
-		clusterLister:        cluster.Management.Management.Clusters(metav1.NamespaceAll).Controller().Lister(),
-		clusterLoggingLister: cluster.Management.Management.ClusterLoggings(clusterName).Controller().Lister(),
-		nodeLister:           cluster.Core.Nodes(metav1.NamespaceAll).Controller().Lister(),
-		projectLoggingLister: cluster.Management.Management.ProjectLoggings(metav1.NamespaceAll).Controller().Lister(),
-		projectLister:        cluster.Management.Management.Projects(metav1.NamespaceAll).Controller().Lister(),
-		templateLister:       cluster.Management.Management.CatalogTemplates(metav1.NamespaceAll).Controller().Lister(),
-		appDeployer:          appDeployer,
-		systemAccountManager: systemaccount.NewManager(cluster.Management),
+	//Author: Zac+
+	//return &Deployer{
+	//	clusterName:          clusterName,
+	//	clusterLister:        cluster.Management.Management.Clusters(metav1.NamespaceAll).Controller().Lister(),
+	//	clusterLoggingLister: cluster.Management.Management.ClusterLoggings(clusterName).Controller().Lister(),
+	//	nodeLister:           cluster.Core.Nodes(metav1.NamespaceAll).Controller().Lister(),
+	//	projectLoggingLister: cluster.Management.Management.ProjectLoggings(metav1.NamespaceAll).Controller().Lister(),
+	//	projectLister:        cluster.Management.Management.Projects(metav1.NamespaceAll).Controller().Lister(),
+	//	templateLister:       cluster.Management.Management.CatalogTemplates(metav1.NamespaceAll).Controller().Lister(),
+	//	appDeployer:          appDeployer,
+	//	systemAccountManager: systemaccount.NewManager(cluster.Management),
+	//}
+	deploy := &Deployer{
+			clusterName:          clusterName,
+			clusterLister:        cluster.Management.Management.Clusters(metav1.NamespaceAll).Controller().Lister(),
+			clusterLoggingLister: cluster.Management.Management.ClusterLoggings(clusterName).Controller().Lister(),
+			nodeLister:           cluster.Core.Nodes(metav1.NamespaceAll).Controller().Lister(),
+			projectLoggingLister: cluster.Management.Management.ProjectLoggings(metav1.NamespaceAll).Controller().Lister(),
+			projectLister:        cluster.Management.Management.Projects(metav1.NamespaceAll).Controller().Lister(),
+			templateLister:       cluster.Management.Management.CatalogTemplates(metav1.NamespaceAll).Controller().Lister(),
+			appDeployer:          appDeployer,
+			systemAccountManager: systemaccount.NewManager(cluster.Management),
+		}
+	if settings.GetLoggingSetting(clusterName).EnforceDeploy {
+		go deploy.sync()
 	}
+	return deploy
+	//Author: Zac-
 }
 
 func (d *Deployer) ClusterLoggingSync(key string, obj *mgmtv3.ClusterLogging) (runtime.Object, error) {
@@ -178,6 +195,11 @@ func (d *Deployer) isRancherLoggingDeploySuccess() error {
 }
 
 func (d *Deployer) isAllLoggingDisable() (bool, error) {
+	//Author: Zac+
+	if settings.GetLoggingSetting(d.clusterName).EnforceDeploy {
+		return false, nil
+	}
+	//Author: Zac-
 	clusterLoggings, err := d.clusterLoggingLister.List("", labels.NewSelector())
 	if err != nil {
 		return false, err

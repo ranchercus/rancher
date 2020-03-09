@@ -34,3 +34,13 @@ func GetWorkloadSetting(clusterName string) *v3.WorkloadSetting {
 		return &ws
 	}
 }
+
+func GetLoggingSetting(clusterName string) *v3.LoggingSetting {
+	setting := clusterProvider.Get(clusterName)
+	if setting == nil {
+		return &v3.LoggingSetting{}
+	} else {
+		ws := setting.Spec.LoggingSetting
+		return &ws
+	}
+}

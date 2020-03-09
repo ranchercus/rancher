@@ -29,3 +29,4 @@ pkg/settings/custom_setting.go
 pkg/api/customization/roletemplatebinding/store.go
 pkg/api/customization/project/project_store.go
 pkg/api/server/server.go
+pkg/controllers/user/logging/deployer/deployer.go
