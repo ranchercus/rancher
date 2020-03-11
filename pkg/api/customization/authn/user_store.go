@@ -214,9 +214,13 @@ func (s *userStore) Delete(apiContext *types.APIContext, schema *types.Schema, i
 	}
 
 	//return s.Store.Delete(apiContext, schema, id) Author: Zac+
-	deleted, err := s.Store.Delete(apiContext, schema, id)
+	user, err := s.ByID(apiContext, schema, id)
+	var username string
 	if err == nil {
-		username, _ := deleted[client.UserFieldUsername].(string)
+		username, _ = user[client.UserFieldUsername].(string)
+	}
+	deleted, err := s.Store.Delete(apiContext, schema, id)
+	if err == nil && username != "" {
 		go harbor.SyncRemoveUser(apiContext, username)
 	}
 	return deleted, err

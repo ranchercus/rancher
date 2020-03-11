@@ -202,6 +202,12 @@ func addData(management *config.ManagementContext, cfg Config) error {
 		return err
 	}
 
+	//Author: Zac+
+	if err := addClusterSetting(management); err != nil {
+		return err
+	}
+	//Author: Zac-
+
 	return addMachineDrivers(management)
 }
 

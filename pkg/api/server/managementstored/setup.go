@@ -2,6 +2,7 @@ package managementstored
 
 import (
 	"context"
+	"github.com/rancher/rancher/pkg/api/store/pipelinetemplate"
 	"net/http"
 
 	"github.com/rancher/norman/store/crd"
@@ -45,7 +46,7 @@ import (
 	clustertemplatestore "github.com/rancher/rancher/pkg/api/store/clustertemplate"
 	featStore "github.com/rancher/rancher/pkg/api/store/feature"
 	globaldnsAPIStore "github.com/rancher/rancher/pkg/api/store/globaldns"
-	grbstore "github.com/rancher/rancher/pkg/api/store/globalrolebindings"
+	"github.com/rancher/rancher/pkg/api/store/globalrolebindings"
 	nodeStore "github.com/rancher/rancher/pkg/api/store/node"
 	nodeTemplateStore "github.com/rancher/rancher/pkg/api/store/nodetemplate"
 	"github.com/rancher/rancher/pkg/api/store/noopwatching"
@@ -67,7 +68,7 @@ import (
 	sourcecodeproviders "github.com/rancher/rancher/pkg/pipeline/providers"
 	managementschema "github.com/rancher/types/apis/management.cattle.io/v3/schema"
 	projectschema "github.com/rancher/types/apis/project.cattle.io/v3/schema"
-	client "github.com/rancher/types/client/management/v3"
+	"github.com/rancher/types/client/management/v3"
 	projectclient "github.com/rancher/types/client/project/v3"
 	"github.com/rancher/types/config"
 )
@@ -139,7 +140,10 @@ func Setup(ctx context.Context, apiContext *config.ScaledContext, clusterManager
 		client.GlobalDNSProviderType,
 		client.ClusterTemplateType,
 		client.ClusterTemplateRevisionType,
+		//Author: Zac+
 		client.ClusterSettingType,
+		client.PipelineTemplateType,
+		//Author: Zac-
 	)
 
 	factory.BatchCreateCRDs(ctx, config.ManagementStorageContext, schemas, &projectschema.Version,
@@ -657,6 +661,10 @@ func Pipeline(schemas *types.Schemas, management *config.ScaledContext, clusterM
 
 	//register and setup source code providers
 	sourcecodeproviders.SetupSourceCodeProviderConfig(management, schemas)
+	//Author: Zac+
+	schema = schemas.Schema(&managementschema.Version, client.PipelineTemplateType)
+	schema.Store = pipelinetemplate.NewStore(schema.Store)
+	//Author: Zac-
 
 }
 

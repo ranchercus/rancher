@@ -3,6 +3,7 @@ package settings
 import (
 	"github.com/rancher/types/apis/management.cattle.io/v3"
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 
@@ -17,4 +18,13 @@ func (s *clusterSettingsProvider) Get(name string) *v3.ClusterSetting {
 		return nil
 	}
 	return setting
+}
+
+func (s *clusterSettingsProvider) GetAll() []*v3.ClusterSetting {
+	settings, err := s.settingsLister.List("", labels.NewSelector())
+	if err != nil {
+		logrus.Errorf("Getting cluster settings error, error=[%v]", err)
+		return nil
+	}
+	return settings
 }
