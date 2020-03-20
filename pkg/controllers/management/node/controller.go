@@ -43,10 +43,6 @@ const (
 	amazonec2               = "amazonec2"
 )
 
-var (
-	falseValue = false
-)
-
 // aliases maps Schema field => driver field
 // The opposite of this lives in pkg/controllers/management/drivers/nodedriver/machine_driver.go
 var aliases = map[string]map[string]string{
@@ -154,6 +150,27 @@ func (m *Lifecycle) Create(obj *v3.Node) (runtime.Object, error) {
 	}
 
 	newObj, err := v3.NodeConditionInitialized.Once(obj, func() (runtime.Object, error) {
+		logrus.Debugf("Called v3.NodeConditionInitialized.Once for [%s] in namespace [%s]", obj.Name, obj.Namespace)
+		// Ensure jail is created first, else the function `NewNodeConfig` will create the full jail path (including parent jail directory) and CreateJail will remove the directory as it does not contain a done file
+		if !m.devMode {
+			err := jailer.CreateJail(obj.Namespace)
+			if err != nil {
+				return nil, errors.WithMessage(err, "node create jail error")
+			}
+		}
+
+		nodeConfig, err := nodeconfig.NewNodeConfig(m.secretStore, obj)
+		if err != nil {
+			return obj, errors.WithMessagef(err, "failed to create node driver config for node [%v]", obj.Name)
+		}
+
+		defer nodeConfig.Cleanup()
+
+		err = m.refreshNodeConfig(nodeConfig, obj)
+		if err != nil {
+			return nil, errors.WithMessagef(err, "unable to create config for node %v", obj.Name)
+		}
+
 		template, err := m.getNodeTemplate(obj.Spec.NodeTemplateName)
 		if err != nil {
 			return obj, err
@@ -167,40 +184,7 @@ func (m *Lifecycle) Create(obj *v3.Node) (runtime.Object, error) {
 			obj.Status.NodeTemplateSpec.EngineInstallURL = defaultEngineInstallURL
 		}
 
-		rawTemplate, err := m.nodeTemplateGenericClient.GetNamespaced(template.Namespace, template.Name, metav1.GetOptions{})
-		if err != nil {
-			return obj, err
-		}
-		data := rawTemplate.(*unstructured.Unstructured).Object
-		rawConfig, ok := values.GetValue(data, template.Spec.Driver+"Config")
-		if !ok {
-			return obj, fmt.Errorf("node config not specified")
-		}
-		if template.Spec.Driver == amazonec2 {
-			setEc2ClusterIDTag(rawConfig, obj.Namespace)
-		}
-		if err := m.updateRawConfigFromCredential(data, rawConfig, template); err != nil {
-			return obj, err
-		}
-		bytes, err := json.Marshal(rawConfig)
-		if err != nil {
-			return obj, errors.Wrap(err, "failed to marshal node driver config")
-		}
-		if !m.devMode {
-			err := jailer.CreateJail(obj.Namespace)
-			if err != nil {
-				return nil, errors.WithMessage(err, "node create jail error")
-			}
-		}
-		config, err := nodeconfig.NewNodeConfig(m.secretStore, obj)
-		if err != nil {
-			return obj, errors.Wrap(err, "failed to save node driver config")
-		}
-		defer config.Cleanup()
-
-		config.SetDriverConfig(string(bytes))
-
-		return obj, config.Save()
+		return obj, nil
 	})
 
 	return newObj.(*v3.Node), err
@@ -208,6 +192,7 @@ func (m *Lifecycle) Create(obj *v3.Node) (runtime.Object, error) {
 
 func (m *Lifecycle) getNodeTemplate(nodeTemplateName string) (*v3.NodeTemplate, error) {
 	ns, n := ref.Parse(nodeTemplateName)
+	logrus.Debugf("getNodeTemplate parsed [%s] to ns: [%s] and n: [%s]", nodeTemplateName, ns, n)
 	return m.nodeTemplateClient.GetNamespaced(ns, n, metav1.GetOptions{})
 }
 
@@ -241,10 +226,17 @@ func (m *Lifecycle) Remove(obj *v3.Node) (runtime.Object, error) {
 		if err != nil {
 			return obj, err
 		}
+
 		if err := config.Restore(); err != nil {
 			return obj, err
 		}
+
 		defer config.Remove()
+
+		err = m.refreshNodeConfig(config, obj)
+		if err != nil {
+			return nil, errors.WithMessagef(err, "unable to refresh config for node %v", obj.Name)
+		}
 
 		mExists, err := nodeExists(config.Dir(), obj)
 		if err != nil {
@@ -383,7 +375,7 @@ func (m *Lifecycle) deployAgent(nodeDir string, obj *v3.Node) error {
 		return err
 	}
 
-	drun := clusterregistrationtokens.NodeCommand(token)
+	drun := clusterregistrationtokens.NodeCommand(token, nil)
 	args := buildAgentCommand(obj, drun)
 	cmd, err := buildCommand(nodeDir, obj, args)
 	if err != nil {
@@ -406,6 +398,11 @@ func (m *Lifecycle) ready(obj *v3.Node) (*v3.Node, error) {
 
 	if err := config.Restore(); err != nil {
 		return obj, err
+	}
+
+	err = m.refreshNodeConfig(config, obj)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "unable to refresh config for node %v", obj.Name)
 	}
 
 	driverConfig, err := config.DriverConfig()
@@ -546,6 +543,64 @@ func (m *Lifecycle) saveConfig(config *nodeconfig.NodeConfig, nodeDir string, ob
 	obj.Status.NodeConfig.Taints = taints.GetRKETaintsFromTaints(expectTaints)
 
 	return obj, nil
+}
+
+func (m *Lifecycle) refreshNodeConfig(nc *nodeconfig.NodeConfig, obj *v3.Node) error {
+	template, err := m.getNodeTemplate(obj.Spec.NodeTemplateName)
+	if err != nil {
+		return err
+	}
+
+	rawTemplate, err := m.nodeTemplateGenericClient.GetNamespaced(template.Namespace, template.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	data := rawTemplate.(*unstructured.Unstructured).Object
+	rawConfig, ok := values.GetValue(data, template.Spec.Driver+"Config")
+	if !ok {
+		return fmt.Errorf("refreshNodeConfig: node config not specified for node %v", obj.Name)
+	}
+
+	if err := m.updateRawConfigFromCredential(data, rawConfig, template); err != nil {
+		logrus.Debugf("refreshNodeConfig: error calling updateRawConfigFromCredential for [%v]: %v", obj.Name, err)
+		return err
+	}
+
+	var update bool
+
+	if template.Spec.Driver == amazonec2 {
+		setEc2ClusterIDTag(rawConfig, obj.Namespace)
+		logrus.Debug("refreshNodeConfig: Updating amazonec2 machine config")
+		//TODO: Update to not be amazon specific, this needs to be moved to the driver
+		update, err = nc.UpdateAmazonAuth(rawConfig)
+		if err != nil {
+			return err
+		}
+	}
+
+	bytes, err := json.Marshal(rawConfig)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal node driver config")
+	}
+
+	newConfig := string(bytes)
+
+	currentConfig, err := nc.DriverConfig()
+	if err != nil {
+		return err
+	}
+
+	if currentConfig != newConfig || update {
+		err = nc.SetDriverConfig(string(bytes))
+		if err != nil {
+			return err
+		}
+
+		return nc.Save()
+	}
+
+	return nil
 }
 
 func (m *Lifecycle) isNodeInAppliedSpec(node *v3.Node) (bool, error) {

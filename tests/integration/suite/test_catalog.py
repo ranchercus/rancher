@@ -1,6 +1,7 @@
 import pytest
 import time
 from rancher import ApiError
+from .conftest import wait_for
 
 from .common import wait_for_template_to_be_created, \
     wait_for_template_to_be_deleted, random_str, wait_for_atleast_workload
@@ -283,3 +284,39 @@ def test_catalog_refresh(admin_mc):
     # It just needs to be more than none, other test can add/remove catalogs
     # so a hard count will break
     assert len(out['catalogs']) > 0, 'no catalogs in response'
+
+
+def test_invalid_catalog_charts(admin_mc, remove_resource):
+    """Test chart with too long name and chart with invalid
+     name in catalog error properly"""
+    client = admin_mc.client
+    name = random_str()
+    url = "https://github.com/rancher/integration-test-charts"
+    catalog = client.create_catalog(name=name,
+                                    branch="broke-charts",
+                                    url=url,
+                                    )
+    remove_resource(catalog)
+    wait_for_template_to_be_created(client, catalog.id)
+
+    def get_errored_catalog(catalog):
+        catalog = client.reload(catalog)
+        if catalog.transitioning == "error":
+            return catalog
+        return None
+    catalog = wait_for(lambda: get_errored_catalog(catalog),
+                       fail_handler=lambda:
+                       "catalog was not found in error state")
+    templates = client.list_template(catalogId=catalog.id).data
+
+    assert "areallylongnamelikereallyreallylongwestillneedmorez234dasdfasd"\
+        not in templates
+    assert "bad-chart_name" not in templates
+    assert catalog.state == "refreshed"
+    assert catalog.transitioningMessage == "Error syncing catalog " + name
+    # this will break if github repo changes
+    assert len(templates) == 6
+    # checking that the errored catalog can be deleted successfully
+    client.delete(catalog)
+    wait_for_template_to_be_deleted(client, name)
+    assert not client.list_catalog(name=name).data

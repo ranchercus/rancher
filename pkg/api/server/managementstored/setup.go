@@ -172,7 +172,7 @@ func Setup(ctx context.Context, apiContext *config.ScaledContext, clusterManager
 	Setting(schemas, apiContext)
 	Feature(schemas)
 	Preference(schemas, apiContext)
-	ClusterRegistrationTokens(schemas)
+	ClusterRegistrationTokens(schemas, apiContext)
 	Tokens(ctx, schemas, apiContext)
 	NodeTemplates(schemas, apiContext)
 	LoggingTypes(schemas, apiContext, clusterManager, k8sProxy)
@@ -370,12 +370,13 @@ func ClusterCatalog(schemas *types.Schemas, managementContext *config.ScaledCont
 	schema.Store = catalogStore.Wrap(schema.Store)
 }
 
-func ClusterRegistrationTokens(schemas *types.Schemas) {
+func ClusterRegistrationTokens(schemas *types.Schemas, management *config.ScaledContext) {
 	schema := schemas.Schema(&managementschema.Version, client.ClusterRegistrationTokenType)
 	schema.Store = &cluster.RegistrationTokenStore{
 		Store: schema.Store,
 	}
-	schema.Formatter = clusterregistrationtokens.Formatter
+	tokenFormatter := clusterregistrationtokens.NewFormatter(management)
+	schema.Formatter = tokenFormatter.Formatter
 }
 
 func Tokens(ctx context.Context, schemas *types.Schemas, mgmt *config.ScaledContext) {
@@ -572,6 +573,7 @@ func Alert(schemas *types.Schemas, management *config.ScaledContext) {
 		ClusterAlertRule: management.Management.ClusterAlertRules(""),
 		ProjectAlertRule: management.Management.ProjectAlertRules(""),
 		Notifiers:        management.Management.Notifiers(""),
+		DialerFactory:    management.Dialer,
 	}
 
 	schema := schemas.Schema(&managementschema.Version, client.NotifierType)

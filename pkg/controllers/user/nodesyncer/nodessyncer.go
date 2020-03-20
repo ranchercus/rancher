@@ -196,17 +196,13 @@ func (m *nodesSyncer) updateAnnotations(node *corev1.Node, obj *v3.Node, nodePla
 
 	node, obj = node.DeepCopy(), obj.DeepCopy()
 	node.Annotations = finalMap
-	obj.Spec.MetadataUpdate.Labels = v3.MapDelta{}
+	obj.Spec.MetadataUpdate.Annotations = v3.MapDelta{}
 
 	return m.updateNodeAndNode(node, obj)
 }
 
 func (m *nodesSyncer) syncLabels(key string, obj *v3.Node) (runtime.Object, error) {
 	if obj == nil {
-		return nil, nil
-	}
-
-	if obj.Status.NodeConfig == nil {
 		return nil, nil
 	}
 
@@ -277,6 +273,10 @@ func (m *nodesSyncer) getNodePlan(node *v3.Node) (v3.RKEConfigNodePlan, error) {
 	}
 
 	if cluster.Status.Driver != v3.ClusterDriverRKE || cluster.Status.AppliedSpec.RancherKubernetesEngineConfig == nil {
+		return v3.RKEConfigNodePlan{}, nil
+	}
+
+	if node.Status.NodeConfig == nil {
 		return v3.RKEConfigNodePlan{}, nil
 	}
 
