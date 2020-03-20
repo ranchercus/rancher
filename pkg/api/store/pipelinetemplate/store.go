@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var reg = regexp.MustCompile(`\${\s*([0-9a-zA-Z_\-.@#]+)\s*}`)
+var reg = regexp.MustCompile(`\${{\s*([0-9a-zA-Z_\-.@#]+)\s*}}`)
 
 type Store struct {
 	types.Store

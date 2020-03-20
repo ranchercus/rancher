@@ -311,6 +311,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 			ReadOnly:  true,
 		},
 	}
+	//Author: Zac+
 	if defaultRegistry != "" && registry == defaultRegistry && !settings.GetPipelineSetting(c.clusterName).RegistryInsecure {
 		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
 			Name: fmt.Sprintf("%s-%s", utils.RegistryCrtVolumeName, processedRegistry),
@@ -324,6 +325,7 @@ func (c *jenkinsPipelineConverter) configPublishStepContainer(container *v1.Cont
 			MountPath: "/callbackscript",
 		})
 	}
+	//Author: Zac-
 }
 
 func (c *jenkinsPipelineConverter) configApplyYamlStepContainer(container *v1.Container, step *v3.Step, stageOrdinal int) error {
